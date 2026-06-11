@@ -1,61 +1,90 @@
 # NAT WebUI
 
-轻量 NAT 节点管理面板原型。当前已打通：登录、节点列表、节点详情、新建/编辑/删除、单节点部署、部署详情、agent 上报回填、节点列表一键复制链接、基础订阅 URL。
+轻量 NAT 节点管理面板。支持 VLESS Reality 节点管理（直连/链式/导入三种模式）、agent 状态上报、订阅链接分发。
 
-## 当前能力
-
-- 管理员登录
-- 节点 CRUD
-- 单节点 `开始部署 / 重新部署`
-- 部署详情页与结果回填
-- agent 上报在线状态
-- 节点列表一键复制 `VLESS` 导入链接
-- 订阅 URL：返回当前全部有效节点的 Base64 订阅内容
-
-## 本地运行
+## 快速部署（新 VPS）
 
 ```bash
-python3 -m venv .venv
+git clone https://github.com/yun8811/natwebui.git /opt/natwebui
+cd /opt/natwebui
+bash scripts/install.sh
+```
+
+安装完成后，编辑 `app/deployer.py`，找到下面这行：
+
+```python
+report_url = f"http://YOUR_PANEL_IP:8788{AGENT_REPORT_PATH}"
+```
+
+把 `YOUR_PANEL_IP` 改成当前 VPS 的实际公网 IP。
+
+```bash
+bash scripts/run-prod.sh
+```
+
+面板默认监听 `0.0.0.0:8788`，用户名 `admin`，密码在安装时自动生成并打印在终端。
+
+## 配置 systemd 开机自启
+
+```bash
+cat > /etc/systemd/system/nat-webui.service << 'SVC'
+[Unit]
+Description=NAT WebUI
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/natwebui
+ExecStart=/opt/natwebui/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8788
+EnvironmentFile=/opt/natwebui/.env.runtime
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+SVC
+
+systemctl daemon-reload
+systemctl enable --now nat-webui
+```
+
+## 环境变量
+
+安装脚本会自动生成 `.env.runtime`，包含：
+
+| 变量 | 说明 |
+|------|------|
+| `NAT_WEBUI_SESSION_SECRET` | 会话加密密钥（自动生成） |
+| `NAT_WEBUI_ADMIN_USERNAME` | 管理员用户名（默认 admin） |
+| `NAT_WEBUI_ADMIN_PASSWORD` | 管理员密码（自动生成） |
+| `NAT_WEBUI_HOST` | 监听地址（默认 0.0.0.0） |
+| `NAT_WEBUI_PORT` | 监听端口（默认 8788） |
+| `NAT_WEBUI_DB_PATH` | 数据库路径（可选） |
+| `NAT_WEBUI_STATUS_STALE_MINUTES` | 节点超时离线分钟数（可选） |
+| `NAT_WEBUI_AGENT_REPORT_PATH` | agent 上报路径（可选） |
+
+## 订阅使用
+
+节点列表页顶部显示订阅 URL。将该 URL 粘贴到 v2rayN / NekoBox 等客户端的「订阅设置」中，通过「更新订阅」同步节点变更。
+
+节点名称格式：`国旗 代号 | 自定义名称`，符合 v2rayN 展示习惯。
+
+## 手动运行（不装 systemd）
+
+```bash
+cd /opt/natwebui
 . .venv/bin/activate
-pip install -r requirements.txt
-export NAT_WEBUI_SESSION_SECRET='your-session-secret'
-export NAT_WEBUI_ADMIN_USERNAME='your-admin'
-export NAT_WEBUI_ADMIN_PASSWORD='your-password'
 uvicorn app.main:app --host 0.0.0.0 --port 8788
 ```
 
-## 关键环境变量
+## 兼容性
 
-- `NAT_WEBUI_SESSION_SECRET`
-- `NAT_WEBUI_ADMIN_USERNAME`
-- `NAT_WEBUI_ADMIN_PASSWORD`
-- `NAT_WEBUI_DB_PATH`（可选）
-- `NAT_WEBUI_STATUS_STALE_MINUTES`（可选）
-- `NAT_WEBUI_AGENT_REPORT_PATH`（可选）
+- deployer 自动适配 Alpine（OpenRC）和 Debian/Ubuntu（systemd）
+- 自动安装 sing-box、crontab 等依赖
+- agent 每 5 分钟通过 crontab 上报在线状态
 
-## 订阅说明
+## 安全提醒
 
-节点列表页顶部会生成当前系统的订阅 URL。
-
-订阅接口返回：
-- 当前所有有 `last_vless_link` 的节点
-- 每条链接按换行拼接
-- 整体 Base64 编码
-
-适合直接导入 v2rayN / NekoBox 等客户端，并通过“更新订阅”同步新增或变更节点。
-
-## 兼容性说明
-
-当前远端部署脚本优先保证可用性：
-
-- Alpine / OpenRC：写入 `/etc/init.d/sing-box`，通过 `rc-update` 和 `rc-service` 托管。
-- Debian / Ubuntu / systemd：写入 `/etc/systemd/system/sing-box.service`，通过 `systemctl enable --now sing-box` 托管。
-- 依赖安装会按系统自动选择 `apk` 或 `apt-get`，覆盖 `curl`、`tar`、`python3`、`cron/crontab` 等基础依赖。
-- agent 上报脚本会写入 `/opt/natctl/agent/report.sh`，并通过 crontab 每 5 分钟上报一次在线状态。
-- 在 systemd 机器上，如存在旧的 `/etc/init.d/sing-box`，部署时会自动改名备份，避免 systemd-sysv-generator 生成冲突服务导致 sing-box 无法正常 enable/start。
-
-## 注意
-
-- `data/*.db` 与 `logs/*.log` 已默认忽略，不应提交运行期数据
-- 仓库默认配置仅用于开发占位，正式环境请务必用环境变量覆盖管理员账号、密码与 session secret
-
+- `.env.runtime` 和 `data/*.db` 已在 `.gitignore` 中排除
+- 部署到新 VPS 前请修改 `app/deployer.py` 中的 `YOUR_PANEL_IP`
+- 生产环境建议配置防火墙仅开放 8788 端口
