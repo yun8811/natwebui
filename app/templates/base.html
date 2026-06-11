@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ title }} - NAT WebUI</title>
+  <link rel="stylesheet" href="/static/style.css?v=202606030207">
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div>
+        <div class="eyebrow">NAT WebUI</div>
+        <h1>{{ title }}</h1>
+      </div>
+      {% if request.session.get('auth') %}
+      <div class="topbar-actions">
+        {% block topbar_actions %}{% endblock %}
+        <button class="icon-btn theme-toggle" type="button" id="themeToggle" title="切换白天/黑夜模式" aria-label="切换白天/黑夜模式">☾</button>
+        <form method="post" action="/logout">
+          <button class="ghost-btn" type="submit">退出</button>
+        </form>
+      </div>
+      {% endif %}
+    </header>
+    <main>
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+  <script>
+    (function initTheme() {
+      const saved = localStorage.getItem('nat-webui-theme') || 'dark';
+      document.documentElement.dataset.theme = saved;
+      window.addEventListener('DOMContentLoaded', () => {
+        const toggle = document.getElementById('themeToggle');
+        if (!toggle) return;
+        const sync = () => { toggle.textContent = document.documentElement.dataset.theme === 'light' ? '☀' : '☾'; };
+        sync();
+        toggle.addEventListener('click', () => {
+          const next = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+          document.documentElement.dataset.theme = next;
+          localStorage.setItem('nat-webui-theme', next);
+          sync();
+        });
+      });
+    })();
+
+    function restoreButtonContent(button, html, ms) {
+      if (!button) return;
+      setTimeout(() => {
+        button.innerHTML = html;
+      }, ms);
+    }
+
+    async function copyText(text, button) {
+      if (!text) return;
+      const originalHtml = button ? button.innerHTML : '';
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(text);
+        } else {
+          const textarea = document.createElement('textarea');
+          textarea.value = text;
+          textarea.setAttribute('readonly', '');
+          textarea.style.position = 'absolute';
+          textarea.style.left = '-9999px';
+          document.body.appendChild(textarea);
+          textarea.select();
+          document.execCommand('copy');
+          document.body.removeChild(textarea);
+        }
+        if (button) {
+          button.innerHTML = '✓';
+          restoreButtonContent(button, originalHtml, 1200);
+        }
+      } catch (err) {
+        console.error(err);
+        if (button) {
+          button.innerHTML = '✕';
+          restoreButtonContent(button, originalHtml, 1500);
+        }
+      }
+    }
+    document.addEventListener('click', (event) => {
+      const sortButton = event.target.closest('.sort-header');
+      if (!sortButton) return;
+      const table = sortButton.closest('[data-sortable-table]');
+      if (!table) return;
+      const key = sortButton.dataset.sortKey;
+      const tbody = table.querySelector('tbody');
+      if (!key || !tbody) return;
+      const currentKey = table.dataset.sortKey || '';
+      const currentDir = table.dataset.sortDir || 'asc';
+      const nextDir = currentKey === key && currentDir === 'asc' ? 'desc' : 'asc';
+      const rows = Array.from(tbody.querySelectorAll('tr'));
+      const collator = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' });
+      rows.sort((a, b) => {
+        const av = (a.dataset[`sort${key.charAt(0).toUpperCase()}${key.slice(1)}`] || '').trim();
+        const bv = (b.dataset[`sort${key.charAt(0).toUpperCase()}${key.slice(1)}`] || '').trim();
+        const result = collator.compare(av, bv);
+        return nextDir === 'asc' ? result : -result;
+      });
+      rows.forEach(row => tbody.appendChild(row));
+      table.dataset.sortKey = key;
+      table.dataset.sortDir = nextDir;
+      table.querySelectorAll('.sort-header').forEach(button => {
+        button.classList.toggle('is-active', button === sortButton);
+        button.dataset.sortDir = button === sortButton ? nextDir : '';
+        const arrow = button.querySelector('.sort-arrow');
+        if (arrow) arrow.textContent = button === sortButton ? (nextDir === 'asc' ? '↑' : '↓') : '';
+      });
+    });
+
+    document.addEventListener('click', (event) => {
+      const editButton = event.target.closest('.name-edit-trigger');
+      if (!editButton) return;
+      const form = editButton.closest('.name-inline-form');
+      const input = form ? form.querySelector('.node-name-input') : null;
+      if (!form || !input) return;
+      form.classList.add('is-editing');
+      input.focus();
+      input.select();
+    });
+
+    document.addEventListener('keydown', (event) => {
+      const input = event.target.closest('.node-name-input');
+      if (!input) return;
+      if (event.key === 'Escape') {
+        const form = input.closest('.name-inline-form');
+        if (!form) return;
+        input.value = form.dataset.originalName || input.defaultValue || '';
+        form.classList.remove('is-editing');
+        event.preventDefault();
+      }
+    });
+  </script>
+</body>
+</html>

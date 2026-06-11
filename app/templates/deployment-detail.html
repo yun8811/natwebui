@@ -1,0 +1,87 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<section class="panel" data-deploy-detail data-deploy-id="{{ deployment['deploy_id'] }}" data-auto-refresh="{{ 'true' if auto_refresh else 'false' }}">
+  <div class="panel-head">
+    <div>
+      <div class="panel-title">部署任务</div>
+      <div class="panel-subtitle">当前先打通任务壳子、状态流转和日志展示，下一步再接真实 SSH 部署。</div>
+    </div>
+    <div class="panel-actions">
+      {% if node %}
+      <a class="ghost-btn link-plain" href="/nodes/{{ node['node_id'] }}">返回节点详情</a>
+      {% endif %}
+      <a class="ghost-btn link-plain" href="/nodes">返回列表</a>
+    </div>
+  </div>
+
+  <div class="grid-two">
+    <article class="panel inner-panel">
+      <div class="panel-title">任务信息</div>
+      <dl class="kv-list">
+        <div><dt>任务 ID</dt><dd class="mono break-all">{{ deployment['deploy_id'] }}</dd></div>
+        <div><dt>节点 ID</dt><dd class="mono break-all">{{ deployment['node_id'] }}</dd></div>
+        <div><dt>动作</dt><dd>{{ deployment['action_type'] }}</dd></div>
+        <div><dt>状态</dt><dd id="deploy-result">{{ deployment['result'] }}</dd></div>
+        <div><dt>开始时间</dt><dd>{{ deployment['started_at'] }}</dd></div>
+        <div><dt>结束时间</dt><dd id="deploy-ended-at">{{ deployment['ended_at'] or '进行中' }}</dd></div>
+        <div><dt>失败阶段</dt><dd id="deploy-failure-stage">{{ deployment['failure_stage'] or '暂无' }}</dd></div>
+      </dl>
+    </article>
+
+    <article class="panel inner-panel">
+      <div class="panel-title">产出</div>
+      <dl class="kv-list">
+        <div><dt>摘要日志</dt><dd id="deploy-summary-log" class="break-all">{{ deployment['summary_log'] or '暂无' }}</dd></div>
+        <div><dt>导入链接</dt><dd id="deploy-link" class="mono break-all">{{ deployment['generated_vless_link'] or '暂无' }}</dd></div>
+      </dl>
+    </article>
+  </div>
+
+  <article class="panel inner-panel">
+    <div class="panel-title">原始日志</div>
+    <pre id="deploy-raw-log" class="code-box">{{ deployment['raw_log'] or '暂无原始日志' }}</pre>
+  </article>
+</section>
+
+<script>
+(() => {
+  const root = document.querySelector('[data-deploy-detail]');
+  if (!root) return;
+  if (root.dataset.autoRefresh !== 'true') return;
+
+  const deployId = root.dataset.deployId;
+  const resultEl = document.getElementById('deploy-result');
+  const endedAtEl = document.getElementById('deploy-ended-at');
+  const failureStageEl = document.getElementById('deploy-failure-stage');
+  const summaryEl = document.getElementById('deploy-summary-log');
+  const linkEl = document.getElementById('deploy-link');
+  const rawLogEl = document.getElementById('deploy-raw-log');
+
+  let stopped = false;
+
+  async function poll() {
+    if (stopped) return;
+    try {
+      const res = await fetch(`/api/deployments/${deployId}`, { headers: { 'X-Requested-With': 'fetch' } });
+      if (!res.ok) return;
+      const data = await res.json();
+      resultEl.textContent = data.result || 'unknown';
+      endedAtEl.textContent = data.ended_at || '进行中';
+      failureStageEl.textContent = data.failure_stage || '暂无';
+      summaryEl.textContent = data.summary_log || '暂无';
+      linkEl.textContent = data.generated_vless_link || '暂无';
+      rawLogEl.textContent = data.raw_log || '暂无原始日志';
+      if (!data.running && !['pending', 'running'].includes(data.result)) {
+        stopped = true;
+        root.dataset.autoRefresh = 'false';
+        return;
+      }
+    } catch (_) {}
+    setTimeout(poll, 2000);
+  }
+
+  setTimeout(poll, 1200);
+})();
+</script>
+{% endblock %}

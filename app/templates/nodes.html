@@ -1,0 +1,353 @@
+{% extends 'base.html' %}
+
+{% macro subscription_buttons(urls, label='', scope='all') -%}
+  <button class="icon-btn sub-brand-icon" type="button" title="复制{{ label }} v2rayN 订阅 URL" aria-label="复制{{ label }} v2rayN 订阅 URL" data-sub-url data-sub-scope="{{ scope }}" data-sub-kind="v2rayn" onclick='copyText({{ urls.v2rayn | tojson }}, this)'><img src="/static/icons/v2rayn.png" alt="" aria-hidden="true"></button>
+  <button class="icon-btn sub-brand-icon" type="button" title="复制{{ label }} Clash 订阅 URL" aria-label="复制{{ label }} Clash 订阅 URL" data-sub-url data-sub-scope="{{ scope }}" data-sub-kind="clash" onclick='copyText({{ urls.clash | tojson }}, this)'><img src="/static/icons/clash.png" alt="" aria-hidden="true"></button>
+{%- endmacro %}
+
+{% macro node_table(section_nodes, empty_text) -%}
+  {% if section_nodes %}
+  <div class="node-table-wrap">
+    <table class="node-table sortable-table" data-sortable-table>
+      <thead>
+        <tr>
+          <th><button class="sort-header" type="button" data-sort-key="name">节点名<span class="sort-arrow"></span></button></th>
+          <th><button class="sort-header" type="button" data-sort-key="entry">入口 / IP<span class="sort-arrow"></span></button></th>
+          <th><button class="sort-header" type="button" data-sort-key="region">地区<span class="sort-arrow"></span></button></th>
+          <th><button class="sort-header" type="button" data-sort-key="protocol">协议<span class="sort-arrow"></span></button></th>
+          <th><button class="sort-header" type="button" data-sort-key="status">状态<span class="sort-arrow"></span></button></th>
+          <th><button class="sort-header" type="button" data-sort-key="tags">标签<span class="sort-arrow"></span></button></th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for node in section_nodes %}
+        {% set entry_text = node.masked_entry_text %}
+        {% set tags_text = node.tags | map(attribute='name') | join(' ') %}
+        <tr data-sort-name="{{ node.name }}" data-sort-entry="{{ entry_text }}" data-sort-region="{{ node.region_badge or node.region_code or node.region_label or '' }}" data-sort-protocol="{{ node.protocol_label }}" data-sort-status="{{ node.badge_text }}" data-sort-tags="{{ tags_text }}">
+          <td>
+            <div class="node-name-cell">
+              <span class="name-region-prefix" title="{{ node.region_label }}">
+                {% for flag_code in node.region_flag_codes %}
+                  <img class="flag-icon flag-icon-sm" src="/static/flags/{{ flag_code }}.svg" alt="{{ flag_code | upper }}" loading="lazy" onerror="this.remove()">
+                {% endfor %}
+                <span class="name-region-badge">{{ node.region_badge or node.region_code or '' }}</span>
+              </span>
+              <form method="post" action="/nodes/{{ node.node_id }}/rename" class="name-inline-form" data-original-name="{{ node.name }}">
+                <span class="node-name-text">{{ node.name }}</span>
+                <input class="node-name-input" type="text" name="name" value="{{ node.name }}" maxlength="80" required aria-label="节点名">
+                <button class="name-edit-trigger" type="button" title="编辑节点名" aria-label="编辑节点名">✎</button>
+                <button class="name-save-trigger" type="submit" title="保存节点名" aria-label="保存节点名">✔</button>
+              </form>
+              {% if node.get('is_chain') %}
+              <span class="node-kind-icon" title="链式节点" aria-label="链式节点">⛓</span>
+              {% endif %}
+            </div>
+          </td>
+          <td>
+            {% if node.get('is_chain') %}
+            {{ node.front_node_name or node.front_node_id }} → {{ node.backend_node_name or node.backend_node_id }}
+            {% else %}
+            <span title="IP 已遮挡，详情/编辑页可查看完整值">{{ node.masked_ip }}</span>
+            {% endif %}
+          </td>
+          <td>
+            <span class="flag-cell" title="{{ node.region_label }}" data-region-code="{{ node.region_code }}" data-region-badge="{{ node.region_badge }}">
+              {% for flag_code in node.region_flag_codes %}
+                <img class="flag-icon" src="/static/flags/{{ flag_code }}.svg" alt="{{ flag_code | upper }}" loading="lazy" onerror="this.remove(); this.closest('.flag-cell').classList.add('flag-missing')">
+                {% if not loop.last %}<span class="flag-arrow">→</span>{% endif %}
+              {% endfor %}
+              <span class="flag-badge">{{ node.region_badge or node.region_code or '—' }}</span>
+            </span>
+          </td>
+          <td><span class="badge proto">{{ node.protocol_label }}</span></td>
+          <td><span class="badge {{ node.badge_class }}">{{ node.badge_text }}</span></td>
+          <td>
+            <div class="tag-stack">
+              <div class="node-tags">
+                {% for tag in node.tags %}
+                  <span class="tag-chip" style="--tag-color: {{ tag.color }}">{{ tag.name }}</span>
+                {% else %}
+                  <span class="muted-small">—</span>
+                {% endfor %}
+              </div>
+              <details class="tag-picker">
+                <summary title="选择标签" aria-label="选择标签">＋</summary>
+                <form method="post" action="/nodes/{{ node.node_id }}/tags">
+                  {% set selected_tag_ids = node.tags | map(attribute='tag_id') | list %}
+                  {% for tag in tags %}
+                    <label class="tag-option">
+                      <input type="checkbox" name="tag_ids" value="{{ tag.tag_id }}" {% if tag.tag_id in selected_tag_ids %}checked{% endif %}>
+                      <span class="tag-chip" style="--tag-color: {{ tag.color }}">{{ tag.name }}</span>
+                    </label>
+                  {% else %}
+                    <span class="muted-small">先添加标签</span>
+                  {% endfor %}
+                  <button class="small-btn tag-save-btn" type="submit" title="保存标签" aria-label="保存标签">💾</button>
+                </form>
+              </details>
+            </div>
+          </td>
+          <td>
+            <div class="inline-actions">
+              <button class="icon-btn" type="button" title="复制链接" aria-label="复制链接" onclick='copyText({{ node.last_vless_link | tojson }}, this)' {% if not node.last_vless_link %}disabled{% endif %}>⧉</button>
+              <a class="icon-btn link-plain" href="/nodes/{{ node.node_id }}" title="查看详情" aria-label="查看详情">⌕</a>
+              <form method="post" action="/nodes/{{ node.node_id }}/reinstall">
+                <button class="icon-btn" type="submit" title="重装" aria-label="重装">↻</button>
+              </form>
+              <form method="post" action="/nodes/{{ node.node_id }}/delete" onsubmit="return confirm('确认删除该节点记录？此操作不会卸载远端服务。');">
+                <button class="icon-btn danger-btn" type="submit" title="删除" aria-label="删除">×</button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-box">{{ empty_text }}</div>
+  {% endif %}
+{%- endmacro %}
+
+{% block topbar_actions %}
+<script type="application/json" id="subscriptionUrlsJson">{{ subscription_urls | tojson }}</script>
+<div class="top-sub-actions" aria-label="当前分类订阅">
+  <button class="icon-btn sub-brand-icon" type="button" title="复制当前分类 v2rayN 订阅 URL" aria-label="复制当前分类 v2rayN 订阅 URL" data-current-sub data-sub-kind="v2rayn"><img src="/static/icons/v2rayn.png" alt="" aria-hidden="true"></button>
+  <button class="icon-btn sub-brand-icon" type="button" title="复制当前分类 Clash 订阅 URL" aria-label="复制当前分类 Clash 订阅 URL" data-current-sub data-sub-kind="clash"><img src="/static/icons/clash.png" alt="" aria-hidden="true"></button>
+  <button class="icon-btn rotate-token-icon" type="button" id="rotateSubscriptionToken" title="轮换订阅 token" aria-label="轮换订阅 token">⟳</button>
+</div>
+{% endblock %}
+
+{% block content %}
+<section class="panel">
+  <div class="panel-head node-list-head">
+    <div>
+      <div class="panel-title">节点列表</div>
+      <div class="panel-subtitle">直连和链式分组管理；订阅按分类独立复制。</div>
+    </div>
+  </div>
+
+  <div class="node-toolbar" aria-label="节点管理工具区">
+    <div class="toolbar-main-row">
+      <div class="node-tabs" role="tablist" aria-label="节点分类">
+        <button class="node-tab is-active" type="button" data-tab-target="direct" role="tab" aria-selected="true">直连 <span>{{ direct_nodes|length }}</span></button>
+        <button class="node-tab" type="button" data-tab-target="chain" role="tab" aria-selected="false">链式 <span>{{ chain_nodes|length }}</span></button>
+        <button class="node-tab" type="button" data-tab-target="imported" role="tab" aria-selected="false">导入 <span>{{ imported_nodes|length }}</span></button>
+      </div>
+      <div class="toolbar-create-actions">
+        <a class="link-btn" href="/nodes/new">新建节点</a>
+        <a class="link-btn" href="/nodes/new-chain">新建链式节点</a>
+        <a class="link-btn" href="/nodes/import">导入节点</a>
+      </div>
+    </div>
+
+    <div class="toolbar-tags-row">
+      <details class="tag-add-popover">
+        <summary class="small-btn tag-add-icon" title="添加标签" aria-label="添加标签">+</summary>
+        <form class="tag-create-form" method="post" action="/tags">
+          <input type="text" name="name" placeholder="YUN / 家宽 / 线路" maxlength="20">
+          <div class="color-dots">
+            {% for color in tag_colors %}
+              <label class="color-dot" style="--tag-color: {{ color }}" title="{{ color }}">
+                <input type="radio" name="color" value="{{ color }}" {% if loop.first %}checked{% endif %}>
+                <span></span>
+              </label>
+            {% endfor %}
+          </div>
+          <button class="small-btn primary-small" type="submit">添加</button>
+        </form>
+      </details>
+
+      {% if tags %}
+      <div class="tag-manager">
+        {% for tag in tags %}
+          <form method="post" action="/tags/{{ tag.tag_id }}/delete" onsubmit="return confirm('删除标签 {{ tag.name }}？');">
+            <span class="tag-chip" style="--tag-color: {{ tag.color }}">{{ tag.name }}</span>
+            <button class="tag-delete" type="submit" title="删除标签">×</button>
+          </form>
+        {% endfor %}
+      </div>
+      {% else %}
+      <span class="muted-small">暂无标签</span>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="node-tab-panel is-active" data-tab-panel="direct" role="tabpanel">
+    <div class="tab-panel-head">
+      <div>
+        <div class="tab-title">直连节点</div>
+        <div class="panel-subtitle">普通 VLESS + Reality / Cloudflare WS 入口。</div>
+      </div>
+    </div>
+    {{ node_table(direct_nodes, '暂无直连节点。') }}
+  </div>
+
+  <div class="node-tab-panel" data-tab-panel="chain" role="tabpanel" hidden>
+    <div class="tab-panel-head">
+      <div>
+        <div class="tab-title">链式节点</div>
+        <div class="panel-subtitle">前置入口 → 后端落地。</div>
+      </div>
+    </div>
+    {{ node_table(chain_nodes, '暂无链式节点。') }}
+  </div>
+
+  <div class="node-tab-panel" data-tab-panel="imported" role="tabpanel" hidden>
+    <div class="tab-panel-head">
+      <div>
+        <div class="tab-title">导入节点</div>
+        <div class="panel-subtitle">外部 VLESS 链接导入，无需 VPS SSH 凭据。</div>
+      </div>
+      <div>
+        <a class="link-btn" href="/nodes/import">+ 批量导入</a>
+      </div>
+    </div>
+    {{ node_table(imported_nodes, '暂无导入节点。') }}
+  </div>
+</section>
+
+<div class="modal-backdrop" id="rotateTokenModal" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="rotateTokenTitle">
+    <div class="modal-kicker">Subscription token</div>
+    <div class="modal-title" id="rotateTokenTitle">确认轮换订阅 token？</div>
+    <div class="modal-copy" id="rotateTokenMessage">
+      轮换后，当前 token 会在 24 小时后失效。请尽快把 v2rayN / Clash 客户端里的订阅链接更新为新 token。
+    </div>
+    <div class="modal-token-note" id="rotateTokenResult" hidden></div>
+    <div class="modal-actions">
+      <button class="ghost-btn" type="button" id="rotateTokenCancel">取消</button>
+      <button class="link-btn" type="button" id="rotateTokenConfirm">确认轮换</button>
+      <button class="link-btn" type="button" id="rotateTokenClose" hidden>知道了</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const tabs = Array.from(document.querySelectorAll('.node-tab'));
+  const panels = Array.from(document.querySelectorAll('.node-tab-panel'));
+  const subscriptionUrls = JSON.parse(document.getElementById('subscriptionUrlsJson')?.textContent || '{}');
+  let activeScope = 'direct';
+
+  function updateCurrentSubscriptionButtons() {
+    document.querySelectorAll('[data-current-sub]').forEach((button) => {
+      const kind = button.dataset.subKind || 'v2rayn';
+      const nextUrl = subscriptionUrls?.[activeScope]?.[kind];
+      const label = activeScope === 'chain' ? '链式' : (activeScope === 'imported' ? '导入' : '直连');
+      button.dataset.subScope = activeScope;
+      button.title = `复制${label} ${kind === 'clash' ? 'Clash' : 'v2rayN'} 订阅 URL`;
+      button.setAttribute('aria-label', button.title);
+      button.onclick = () => copyText(nextUrl || '', button);
+      button.disabled = !nextUrl;
+    });
+  }
+
+  function activateTab(target) {
+    activeScope = target === 'chain' ? 'chain' : (target === 'imported' ? 'imported' : 'direct');
+    tabs.forEach((item) => {
+      const active = item.dataset.tabTarget === target;
+      item.classList.toggle('is-active', active);
+      item.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    panels.forEach((panel) => {
+      const active = panel.dataset.tabPanel === target;
+      panel.classList.toggle('is-active', active);
+      panel.hidden = !active;
+    });
+    updateCurrentSubscriptionButtons();
+    // Persist tab in URL hash and sessionStorage
+    if (window.location.hash !== '#' + target) {
+      history.replaceState(null, '', '#' + target);
+    }
+    try { sessionStorage.setItem('natxyz-active-tab', target); } catch(e) {}
+  }
+
+  tabs.forEach((tab) => {
+    tab.addEventListener('click', () => {
+      activateTab(tab.dataset.tabTarget);
+    });
+  });
+
+  // Restore tab from URL hash on page load
+  (function restoreTab() {
+    const hash = window.location.hash.replace('#', '');
+    const validTargets = ['direct', 'chain', 'imported'];
+    if (validTargets.includes(hash)) {
+      activateTab(hash);
+      return;
+    }
+    // Check sessionStorage for last active tab
+    try {
+      const stored = sessionStorage.getItem('natxyz-active-tab');
+      if (validTargets.includes(stored)) {
+        activateTab(stored);
+        return;
+      }
+    } catch(e) {}
+    // Default: direct tab already active via HTML classes
+    updateCurrentSubscriptionButtons();
+  })();
+
+  const rotateButton = document.getElementById('rotateSubscriptionToken');
+  const rotateModal = document.getElementById('rotateTokenModal');
+  const rotateCancel = document.getElementById('rotateTokenCancel');
+  const rotateConfirm = document.getElementById('rotateTokenConfirm');
+  const rotateClose = document.getElementById('rotateTokenClose');
+  const rotateMessage = document.getElementById('rotateTokenMessage');
+  const rotateResult = document.getElementById('rotateTokenResult');
+
+  function openRotateModal() {
+    if (!rotateModal) return;
+    rotateModal.hidden = false;
+    rotateConfirm.hidden = false;
+    rotateCancel.hidden = false;
+    rotateClose.hidden = true;
+    rotateConfirm.disabled = false;
+    rotateConfirm.textContent = '确认轮换';
+    rotateMessage.textContent = '轮换后，当前 token 会在 24 小时后失效。请尽快把 v2rayN / Clash 客户端里的订阅链接更新为新 token。';
+    rotateResult.hidden = true;
+    rotateResult.textContent = '';
+  }
+
+  function closeRotateModal() {
+    if (rotateModal) rotateModal.hidden = true;
+  }
+
+  if (rotateButton && rotateModal && rotateConfirm) {
+    rotateButton.addEventListener('click', openRotateModal);
+    rotateCancel?.addEventListener('click', closeRotateModal);
+    rotateClose?.addEventListener('click', closeRotateModal);
+    rotateModal.addEventListener('click', (event) => {
+      if (event.target === rotateModal) closeRotateModal();
+    });
+    rotateConfirm.addEventListener('click', async () => {
+      rotateConfirm.disabled = true;
+      rotateConfirm.textContent = '轮换中…';
+      try {
+        const response = await fetch('/subscriptions/rotate-token', { method: 'POST', headers: { 'Accept': 'application/json' } });
+        const data = await response.json();
+        if (!response.ok || !data.ok) {
+          throw new Error(data.detail || data.message || 'token 轮换失败');
+        }
+        if (data.subscription_urls) {
+          Object.assign(subscriptionUrls, data.subscription_urls);
+          updateCurrentSubscriptionButtons();
+        }
+        rotateMessage.textContent = data.message || '订阅 token 已轮换。旧 token 将继续保留 24 小时可用，请尽快更新客户端订阅。';
+        rotateResult.hidden = false;
+        rotateResult.innerHTML = `当前 token：<code>${data.subscription_token.slice(0, 8)}…${data.subscription_token.slice(-6)}</code>${data.previous_expires_at ? `<span>旧 token 保留至 ${data.previous_expires_at.slice(0, 19).replace('T', ' ')} UTC。</span>` : ''}`;
+        rotateConfirm.hidden = true;
+        rotateCancel.hidden = true;
+        rotateClose.hidden = false;
+      } catch (err) {
+        rotateMessage.textContent = err.message || 'token 轮换失败';
+        rotateConfirm.disabled = false;
+        rotateConfirm.textContent = '重试';
+      }
+    });
+  }
+})();
+</script>
+{% endblock %}

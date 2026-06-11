@@ -1,0 +1,206 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<section class="panel form-panel">
+  <div class="panel-head">
+      <div>
+        <div class="panel-title">{{ title }}</div>
+        <div class="panel-subtitle">
+          {% if is_chain_form %}
+          创建独立链式节点记录：复用前置节点现有入口，通过链式专用用户 + 路由规则转发到后端，不新增公网端口。
+          {% elif is_tunnel_form %}
+          创建 Cloudflare Tunnel 节点：只填写 SSH、应用路由域名和 Tunnel token，本机默认监听 8080。
+          {% else %}
+          创建普通 VLESS + Reality 单节点，保留原有 SSH / NAT / 端口字段。
+          {% endif %}
+        </div>
+      </div>
+
+    <div class="panel-actions">
+      {% if is_chain_form %}
+      <a class="ghost-btn link-plain" href="/nodes/new">切到单节点</a>
+      {% else %}
+      <a class="ghost-btn link-plain" href="/nodes/new-chain">新建链式节点</a>
+      {% endif %}
+      <a class="ghost-btn link-plain" href="{% if node_id %}/nodes/{{ node_id }}{% else %}/nodes{% endif %}">返回</a>
+    </div>
+  </div>
+
+  {% if errors %}
+  <div class="error-box form-errors">
+    <ul>
+      {% for error in errors %}
+      <li>{{ error }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  <form method="post" class="stack-form" id="node-form">
+    <div class="form-grid">
+      <label class="full-span">
+        <span>节点名</span>
+        <input type="text" name="name" value="{{ form_values['name'] }}" required>
+      </label>
+
+      {% if is_chain_form %}
+      <input type="hidden" name="protocol_type" value="{{ protocol_chain }}">
+      <div class="full-span">
+        <div class="field-note">链式节点必须选择一个 Reality 前置节点；后端可选择 Reality 或 tunnel 落地节点。客户端最终连接前置节点，后端作为落地出口。</div>
+      </div>
+      <label>
+        <span>前置节点</span>
+        <select name="front_node_id" required>
+          <option value="">请选择前置节点</option>
+          {% for item in front_nodes %}
+          <option value="{{ item['node_id'] }}" {% if form_values.get('front_node_id') == item['node_id'] %}selected{% endif %}>{{ item['name'] }} · Reality · {{ item['ip'] }}:{{ item['public_port'] }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        <span>后端节点</span>
+        <select name="backend_node_id" required>
+          <option value="">请选择后端节点</option>
+          {% for item in backend_nodes %}
+          {% if item['protocol_type'] == protocol_tunnel %}
+          <option value="{{ item['node_id'] }}" {% if form_values.get('backend_node_id') == item['node_id'] %}selected{% endif %}>{{ item['name'] }} · tunnel · {{ item['cf_host'] }}:443</option>
+          {% else %}
+          <option value="{{ item['node_id'] }}" {% if form_values.get('backend_node_id') == item['node_id'] %}selected{% endif %}>{{ item['name'] }} · Reality · {{ item['ip'] }}:{{ item['public_port'] }}</option>
+          {% endif %}
+          {% endfor %}
+        </select>
+      </label>
+      <div class="full-span">
+        <div class="field-note">链式节点不填写端口：沿用前置节点的现有公网入口，后续由部署逻辑写入链式专用用户与路由规则。</div>
+      </div>
+      <input type="hidden" name="chain_mode" value="{{ chain_mode }}">
+      <input type="hidden" name="ip" value="{{ form_values.get('ip', '') }}">
+      <input type="hidden" name="ssh_port" value="{{ form_values.get('ssh_port', '') }}">
+      <input type="hidden" name="ssh_user" value="{{ form_values.get('ssh_user', '') }}">
+      <input type="hidden" name="ssh_password" value="{{ form_values.get('ssh_password', '') }}">
+      <input type="hidden" name="public_port" value="{{ form_values.get('public_port', '') }}">
+      <input type="hidden" name="listen_port" value="{{ form_values.get('listen_port', '') }}">
+      {% else %}
+      <label>
+        <span>协议</span>
+        <select name="protocol_type" id="protocol-select">
+          <option value="{{ protocol_direct }}" {% if form_values.get('protocol_type') != protocol_tunnel %}selected{% endif %}>vless</option>
+          <option value="{{ protocol_tunnel }}" {% if form_values.get('protocol_type') == protocol_tunnel %}selected{% endif %}>tunnel</option>
+        </select>
+      </label>
+      <label>
+        <span>NAT IP / DDNS 域名</span>
+        <input type="text" name="ip" value="{{ form_values['ip'] }}" placeholder="1.2.3.4 或 hinet.example.com" required>
+      </label>
+      <label>
+        <span>SSH 端口</span>
+        <input type="number" name="ssh_port" value="{{ form_values['ssh_port'] }}" min="1" max="65535" required>
+      </label>
+      <label>
+        <span>SSH 用户名</span>
+        <input type="text" name="ssh_user" value="{{ form_values['ssh_user'] }}" required>
+      </label>
+      <label class="full-span">
+        <span>SSH 密码</span>
+        <div class="secret-input-row">
+          <input type="password" name="ssh_password" id="ssh-password-input" value="{{ form_values['ssh_password'] }}" autocomplete="new-password" required>
+          <button class="ghost-btn secret-toggle" type="button" data-secret-toggle="ssh-password-input" aria-label="显示或隐藏 SSH 密码">显示</button>
+        </div>
+      </label>
+
+      <label class="vless-only">
+        <span>公网端口</span>
+        <input type="number" name="public_port" value="{{ form_values['public_port'] }}" min="1" max="65535">
+      </label>
+      <label class="vless-only">
+        <span>内网监听端口</span>
+        <input type="number" name="listen_port" value="{{ form_values['listen_port'] }}" min="1" max="65535">
+      </label>
+      <label class="tunnel-only">
+        <span>应用路由域名</span>
+        <input type="text" name="cf_host" value="{{ form_values.get('cf_host', '') }}" placeholder="jp02.holdzywoo.top">
+      </label>
+      <label class="tunnel-only">
+        <span>本地 WS 端口</span>
+        <input type="number" name="ws_port" value="{{ form_values.get('ws_port', 8080) }}" min="1" max="65535" readonly>
+      </label>
+      <label class="full-span tunnel-only">
+        <span>Tunnel token</span>
+        <div class="secret-input-row">
+          <input type="password" name="cf_tunnel_token" id="cf-token-input" value="{{ form_values.get('cf_tunnel_token', '') }}" autocomplete="off">
+          <button class="ghost-btn secret-toggle" type="button" data-secret-toggle="cf-token-input" id="cf-token-toggle" aria-label="显示或隐藏 Tunnel token">显示</button>
+          <button class="ghost-btn" type="button" id="cf-token-copy">复制</button>
+        </div>
+      </label>
+      <input type="hidden" name="ws_path" value="{{ form_values.get('ws_path', '/') }}">
+      <label>
+        <span>地区代码覆盖</span>
+        <input type="text" name="manual_country_code" value="{{ form_values.get('manual_country_code', '') }}" maxlength="2" placeholder="JP / HK / US">
+      </label>
+      <label>
+        <span>地区显示名</span>
+        <input type="text" name="manual_region_label" value="{{ form_values.get('manual_region_label', '') }}" placeholder="日本 / 香港 / 美国">
+      </label>
+      <div class="full-span">
+        <div class="field-note tunnel-note">Tunnel 模式默认本机 8080；Cloudflare Zero Trust 的 Public Hostname / 应用路由需要指向该本地端口。</div>
+        <div class="field-note vless-note">VLESS 模式这里可填固定 IP 或 DDNS 域名；部署 SSH 会自动解析域名，最终 VLESS 链接仍使用你填写的域名。地区留空则自动按当前解析 IP 识别；手动填写后优先使用手动值。</div>
+      </div>
+      {% endif %}
+    </div>
+
+    <div class="form-footer">
+      <button type="submit">{% if mode == 'edit' %}保存修改{% else %}{% if is_chain_form %}创建链式节点{% else %}创建节点{% endif %}{% endif %}</button>
+    </div>
+  </form>
+</section>
+
+<script>
+(function () {
+  const select = document.getElementById('protocol-select');
+  if (!select) return;
+  const tunnelValue = '{{ protocol_tunnel }}';
+  const toggleRequired = (selector, required) => {
+    document.querySelectorAll(selector).forEach((el) => {
+      el.querySelectorAll('input, select, textarea').forEach((input) => {
+        if (required) input.setAttribute('required', 'required');
+        else input.removeAttribute('required');
+      });
+    });
+  };
+  const apply = () => {
+    const isTunnel = select.value === tunnelValue;
+    document.querySelectorAll('.tunnel-only').forEach((el) => el.style.display = isTunnel ? '' : 'none');
+    document.querySelectorAll('.vless-only, .vless-note').forEach((el) => el.style.display = isTunnel ? 'none' : '');
+    document.querySelectorAll('.tunnel-note').forEach((el) => el.style.display = isTunnel ? '' : 'none');
+    toggleRequired('.tunnel-only', isTunnel);
+    toggleRequired('.vless-only', !isTunnel);
+  };
+  select.addEventListener('change', apply);
+  apply();
+
+  document.querySelectorAll('[data-secret-toggle]').forEach((button) => {
+    const input = document.getElementById(button.dataset.secretToggle);
+    if (!input) return;
+    button.addEventListener('click', () => {
+      input.type = input.type === 'password' ? 'text' : 'password';
+      button.textContent = input.type === 'password' ? '显示' : '隐藏';
+    });
+  });
+
+  const token = document.getElementById('cf-token-input');
+  const copyBtn = document.getElementById('cf-token-copy');
+  if (token && copyBtn) {
+    copyBtn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(token.value || '');
+        copyBtn.textContent = '已复制';
+        setTimeout(() => copyBtn.textContent = '复制', 1200);
+      } catch (_) {
+        token.select();
+        document.execCommand('copy');
+      }
+    });
+  }
+})();
+</script>
+{% endblock %}
