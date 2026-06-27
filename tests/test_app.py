@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import urllib.parse
 import uuid
@@ -11,8 +12,8 @@ os.environ.setdefault("NAT_WEBUI_DB_PATH", f"/tmp/nat_webui_test_{uuid.uuid4().h
 
 from app import jobs, main
 from app.chain_deployer import build_front_chain_config
-from app.deployer import build_vless_link, resolve_host_for_ssh
-from app.db import create_deployment_record, create_node_record, get_deployment, get_node, init_db, list_chain_backend_nodes, list_direct_vless_nodes, list_nodes, mark_deployment_failed, update_node_generated_fields
+from app.deployer import build_remote_script, build_singbox_config, build_vless_link, choose_reality_target, generate_reality_materials, resolve_host_for_ssh
+from app.db import create_deployment_record, create_node_record, get_deployment, get_node, init_db, list_chain_backend_nodes, list_direct_vless_nodes, list_nodes, mark_deployment_failed, set_node_generated_fields
 from app.main import app, build_subscription_payload, display_vless_link_for_node
 from app.link_labels import replace_vless_fragment, vless_remark_for_node
 
@@ -114,7 +115,7 @@ def test_failed_reinstall_preserves_existing_deployed_node_status() -> None:
     node = get_node(node_id)
     set_node_generated_fields(
         node_id,
-        selected_reality_target=node["selected_reality_target"] or "www.microsoft.com",
+        selected_reality_target=node["selected_reality_target"] or "www.example.com",
         generated_uuid=node["generated_uuid"] or "11111111-1111-1111-1111-111111111111",
         generated_public_key=node["generated_public_key"] or "test-public-key",
         generated_short_id=node["generated_short_id"] or "abcd1234",
@@ -172,6 +173,7 @@ def test_create_reinstall_and_delete_node_flow(monkeypatch) -> None:
             "ssh_password": "test-pass",
             "public_port": "44321",
             "listen_port": "2443",
+            "selected_reality_target": "www.example.com",
         },
         follow_redirects=False,
     )
@@ -195,6 +197,7 @@ def test_create_reinstall_and_delete_node_flow(monkeypatch) -> None:
             "ssh_password": "test-pass-2",
             "public_port": "44322",
             "listen_port": "2444",
+            "selected_reality_target": "www.example.com",
         },
         follow_redirects=False,
     )
@@ -203,6 +206,8 @@ def test_create_reinstall_and_delete_node_flow(monkeypatch) -> None:
 
     edited_detail = client.get(detail_url)
     assert "NAT_TEST_EDITED" in edited_detail.text
+    node_after_edit = get_node(node_id)
+    assert node_after_edit["selected_reality_target"] == "www.example.com"
     assert "44322" in edited_detail.text
     assert "2444" in edited_detail.text
 
@@ -214,7 +219,7 @@ def test_create_reinstall_and_delete_node_flow(monkeypatch) -> None:
         generated_private_key = "fake-private"
         generated_public_key = "fake-public"
         generated_short_id = "fake-short-id"
-        selected_reality_target = "www.microsoft.com"
+        selected_reality_target = "www.example.com"
 
     monkeypatch.setattr(jobs, "run_real_deploy", lambda node: FakeDeployResult())
 
@@ -276,22 +281,85 @@ def test_create_node_accepts_ddns_domain_as_ip_field_and_preserves_link_host() -
     assert response.status_code == 303
     node_id = response.headers["location"].rsplit("/", 1)[-1]
     node = get_node(node_id)
-    assert node["ip"] == "hinet.example.com"
+    assert node["ip"] == "node.example.com"
 
     link = build_vless_link(
         dict(node),
         generated_uuid="11111111-1111-1111-1111-111111111111",
         generated_public_key="pubkey",
         generated_short_id="abcd",
-        selected_reality_target="www.microsoft.com",
+        selected_reality_target="www.example.com",
     )
-    assert "@hinet.example.com:20282" in link
+    assert "@node.example.com:20282" in link
+
+
+def test_create_node_normalizes_custom_reality_target() -> None:
+    login()
+    response = client.post(
+        "/nodes/new",
+        data={
+            "name": "CUSTOM_REALITY_NODE",
+            "ip": "198.51.100.88",
+            "ssh_port": "2388",
+            "ssh_user": "root",
+            "ssh_password": "custom-pass",
+            "public_port": "44388",
+            "listen_port": "443",
+            "protocol_type": "vless_reality_singbox",
+            "selected_reality_target": "https://WWW.EXAMPLE.COM/",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    node = get_node(response.headers["location"].rsplit("/", 1)[-1])
+    assert node["selected_reality_target"] == "www.example.com"
+
+
+def test_create_node_rejects_reality_target_with_port() -> None:
+    login()
+    response = client.post(
+        "/nodes/new",
+        data={
+            "name": "BAD_REALITY_NODE",
+            "ip": "198.51.100.89",
+            "ssh_port": "2389",
+            "ssh_user": "root",
+            "ssh_password": "custom-pass",
+            "public_port": "44389",
+            "listen_port": "443",
+            "protocol_type": "vless_reality_singbox",
+            "selected_reality_target": "www.example.com:443",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 200
+    assert "Reality 伪装目标只填域名" in response.text
+
+
+def test_deployer_uses_node_custom_reality_target() -> None:
+    assert choose_reality_target({"selected_reality_target": "www.example.com"}) == "www.example.com"
+    generated_uuid, generated_private_key, _generated_public_key, generated_short_id = generate_reality_materials()
+    config_text = build_singbox_config(
+        {"listen_port": 443, "selected_reality_target": "www.example.com"},
+        generated_uuid=generated_uuid,
+        generated_private_key=generated_private_key,
+        generated_short_id=generated_short_id,
+        selected_reality_target=choose_reality_target({"selected_reality_target": "www.example.com"}),
+    )
+    config = json.loads(config_text)
+    tls = config["inbounds"][0]["tls"]
+    assert tls["server_name"] == "www.example.com"
+    assert tls["reality"]["handshake"]["server"] == "www.example.com"
+
+
+def test_deployer_defaults_reality_target_when_blank() -> None:
+    assert choose_reality_target({"selected_reality_target": ""}) == "www.example.com"
 
 
 def test_vless_link_remark_uses_manual_country_flag() -> None:
     node = {
         "name": "hinet-lazy",
-        "ip": "hinet.example.com",
+        "ip": "node.example.com",
         "public_port": 20282,
         "manual_country_code": "TW",
         "manual_region_label": "",
@@ -302,7 +370,7 @@ def test_vless_link_remark_uses_manual_country_flag() -> None:
         generated_uuid="11111111-1111-1111-1111-111111111111",
         generated_public_key="pubkey",
         generated_short_id="abcd",
-        selected_reality_target="www.microsoft.com",
+        selected_reality_target="www.example.com",
     )
     assert urllib.parse.unquote(urllib.parse.urlparse(link).fragment) == "🇹🇼 hinet-lazy"
 
@@ -532,7 +600,7 @@ def test_renamed_node_updates_export_and_subscription_link_name() -> None:
         conn.execute(
             "UPDATE nodes SET last_vless_link = ?, generated_uuid = ?, generated_public_key = ?, generated_short_id = ? WHERE node_id = ?",
             (
-                "vless://11111111-1111-1111-1111-111111111111@198.51.100.61:443?security=reality&sni=www.microsoft.com&pbk=pubkey&sid=abcd&type=tcp&flow=xtls-rprx-vision#OLD_LINK_NAME",
+                "vless://11111111-1111-1111-1111-111111111111@198.51.100.61:443?security=reality&sni=www.example.com&pbk=pubkey&sid=abcd&type=tcp&flow=xtls-rprx-vision#OLD_LINK_NAME",
                 "11111111-1111-1111-1111-111111111111",
                 "pubkey",
                 "abcd",
@@ -604,7 +672,7 @@ def test_scoped_subscription_feeds_split_direct_and_chain_nodes() -> None:
         conn.execute(
             "UPDATE nodes SET last_vless_link = ?, generated_uuid = ?, generated_public_key = ?, generated_short_id = ? WHERE node_id = ?",
             (
-                "vless://22222222-2222-2222-2222-222222222222@198.51.100.71:443?security=reality&sni=www.microsoft.com&pbk=directpub&sid=abcd&type=tcp&flow=xtls-rprx-vision#DIRECT_SUB_NODE",
+                "vless://22222222-2222-2222-2222-222222222222@198.51.100.71:443?security=reality&sni=www.example.com&pbk=directpub&sid=abcd&type=tcp&flow=xtls-rprx-vision#DIRECT_SUB_NODE",
                 "22222222-2222-2222-2222-222222222222",
                 "directpub",
                 "abcd",
@@ -614,7 +682,7 @@ def test_scoped_subscription_feeds_split_direct_and_chain_nodes() -> None:
         conn.execute(
             "UPDATE nodes SET last_vless_link = ?, generated_uuid = ?, generated_public_key = ?, generated_short_id = ? WHERE node_id = ?",
             (
-                "vless://33333333-3333-3333-3333-333333333333@198.51.100.72:443?security=reality&sni=www.microsoft.com&pbk=chainpub&sid=efgh&type=tcp&flow=xtls-rprx-vision#CHAIN_SUB_NODE",
+                "vless://33333333-3333-3333-3333-333333333333@198.51.100.72:443?security=reality&sni=www.example.com&pbk=chainpub&sid=efgh&type=tcp&flow=xtls-rprx-vision#CHAIN_SUB_NODE",
                 "33333333-3333-3333-3333-333333333333",
                 "chainpub",
                 "efgh",
@@ -734,7 +802,7 @@ def test_build_front_chain_config_rejects_tunnel_ws_backend() -> None:
     }
     backend = {
         "protocol_type": "cf_vless_ws",
-        "cf_host": "backend-tunnel.example.com",
+        "cf_host": "backend.example.com",
         "ws_path": "/",
         "generated_uuid": "33333333-3333-3333-3333-333333333333",
     }
@@ -758,7 +826,7 @@ def test_build_front_chain_config_uses_reality_backend_when_not_tunnel() -> None
         "generated_uuid": "44444444-4444-4444-4444-444444444444",
         "generated_public_key": "pub-key",
         "generated_short_id": "short-id",
-        "selected_reality_target": "www.microsoft.com",
+        "selected_reality_target": "www.example.com",
     }
 
     updated = build_front_chain_config(config, chain_tag="chain-y", chain_uuid="chain-uuid", backend=backend)
@@ -767,6 +835,35 @@ def test_build_front_chain_config_uses_reality_backend_when_not_tunnel() -> None
     assert out["server_port"] == 443
     assert out["tls"]["reality"]["public_key"] == "pub-key"
     assert out["tls"]["reality"]["short_id"] == "short-id"
+
+def test_single_node_remote_script_cleans_stale_managed_port() -> None:
+    script = build_remote_script(
+        {
+            "name": "CLEANUP_NODE",
+            "ip": "198.51.100.90",
+            "listen_port": 44300,
+            "public_port": 44300,
+            "generated_uuid": "11111111-1111-1111-1111-111111111111",
+            "generated_private_key": "private-key",
+            "generated_short_id": "abcd1234",
+            "selected_reality_target": "www.example.com",
+        },
+        singbox_config="{}",
+        node_meta="{}",
+        agent_script="#!/bin/sh\necho ok\n",
+        singbox_archive_url="https://example.com/sing-box.tar.gz",
+        singbox_archive_name="sing-box.tar.gz",
+    )
+
+    assert "mkdir -p" in script
+    assert "/etc/systemd/system" in script
+    assert "command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]" in script
+    assert "systemctl stop sing-box" in script
+    assert "rc-service sing-box stop" in script
+    assert "stale NAT WebUI sing-box process" in script
+    assert "port 44300 is occupied by non-NAT-WebUI process" in script
+    assert "ERROR: sing-box listen port is still occupied after cleanup" in script
+
 
 def test_chain_form_excludes_tunnel_as_backend() -> None:
     login()
@@ -793,11 +890,11 @@ def test_chain_form_excludes_tunnel_as_backend() -> None:
             "protocol_type": "cf_vless_ws",
             "public_port": 443,
             "listen_port": 8080,
-            "cf_host": "backend-tunnel.example.com",
+            "cf_host": "backend.example.com",
             "ws_port": 8080,
             "ws_path": "/",
             "generated_uuid": "22222222-2222-2222-2222-222222222222",
-            "last_vless_link": "vless://22222222-2222-2222-2222-222222222222@backend-tunnel.example.com:443?security=tls&type=ws#BACKEND_FORM_TUNNEL",
+            "last_vless_link": "vless://22222222-2222-2222-2222-222222222222@backend.example.com:443?security=tls&type=ws#BACKEND_FORM_TUNNEL",
         }
     )
 
@@ -808,15 +905,64 @@ def test_chain_form_excludes_tunnel_as_backend() -> None:
     assert front_id in backend_ids
     assert tunnel_id not in backend_ids
 
+    imported_id = create_node_record(
+        {
+            "name": "IMPORTED_BACKEND_FORM",
+            "protocol_type": "imported_vless",
+            "ip": "203.0.113.88",
+            "ssh_port": 22,
+            "ssh_user": "imported",
+            "ssh_password": "",
+            "public_port": 443,
+            "listen_port": 443,
+            "last_vless_link": "vless://33333333-3333-3333-3333-333333333333@203.0.113.88:443?security=reality&type=tcp&sni=www.example.com&fp=chrome&pbk=pub-key&sid=short-id&flow=xtls-rprx-vision#IMPORTED_BACKEND_FORM",
+        }
+    )
+    direct_ids = {row["node_id"] for row in list_direct_vless_nodes()}
+    backend_ids = {row["node_id"] for row in list_chain_backend_nodes()}
+    assert imported_id not in direct_ids
+    assert imported_id in backend_ids
+
     response = client.get("/nodes/new-chain")
     assert response.status_code == 200
     html = response.text
     front_block = html.split('name="front_node_id"', 1)[1].split('name="backend_node_id"', 1)[0]
     backend_block = html.split('name="backend_node_id"', 1)[1].split('name="chain_mode"', 1)[0]
     assert "FRONT_FORM_REALITY · Reality · 198.51.100.71:443" in front_block
+    assert "IMPORTED_BACKEND_FORM" not in front_block
     assert "BACKEND_FORM_TUNNEL" not in front_block
     assert "FRONT_FORM_REALITY · Reality · 198.51.100.71:443" in backend_block
-    assert "BACKEND_FORM_TUNNEL · tunnel · backend-tunnel.example.com:443" not in backend_block
+    assert "IMPORTED_BACKEND_FORM" in backend_block
+    assert "BACKEND_FORM_TUNNEL · tunnel · backend.example.com:443" not in backend_block
+
+
+def test_build_front_chain_config_uses_imported_reality_backend() -> None:
+    config = {
+        "inbounds": [
+            {"type": "vless", "tag": "in-1", "tls": {"reality": {"enabled": True}}, "users": []}
+        ],
+        "outbounds": [],
+        "route": {"rules": []},
+    }
+    backend = {
+        "protocol_type": "imported_vless",
+        "last_vless_link": "vless://55555555-5555-5555-5555-555555555555@203.0.113.55:2443?security=reality&type=tcp&sni=www.example.com&fp=firefox&pbk=import-pub&sid=import-sid&flow=xtls-rprx-vision#Imported",
+        "public_port": 2443,
+    }
+
+    updated = build_front_chain_config(config, chain_tag="chain-import", chain_uuid="chain-uuid", backend=backend)
+    out = next(item for item in updated["outbounds"] if item["tag"] == "chain-import-out")
+    assert out["server"] == "203.0.113.55"
+    assert out["server_port"] == 2443
+    assert out["uuid"] == "55555555-5555-5555-5555-555555555555"
+    assert out["flow"] == "xtls-rprx-vision"
+    assert out["tls"]["server_name"] == "www.example.com"
+    assert out["tls"]["utls"]["fingerprint"] == "firefox"
+    assert out["tls"]["reality"]["public_key"] == "import-pub"
+    assert out["tls"]["reality"]["short_id"] == "import-sid"
+    rule = updated["route"]["rules"][0]
+    assert rule["user"] == ["chain-import"]
+    assert "auth_user" not in rule
 
 def test_phase2_markdown_exists() -> None:
     with open("PHASE2.md", "r", encoding="utf-8") as f:

@@ -8,6 +8,8 @@
         <div class="panel-subtitle">
           {% if is_chain_form %}
           创建独立链式节点记录：复用前置节点现有入口，通过链式专用用户 + 路由规则转发到后端，不新增公网端口。
+          {% elif is_import_form %}
+          仅导入现成 VLESS 链接：不保存 SSH 信息，不执行远端部署；只用于订阅和链式落地。
           {% elif is_tunnel_form %}
           创建 Cloudflare Tunnel 节点：只填写 SSH、应用路由域名和 Tunnel token，本机默认监听 8080。
           {% else %}
@@ -19,10 +21,18 @@
     <div class="panel-actions">
       {% if is_chain_form %}
       <a class="ghost-btn link-plain" href="/nodes/new">切到单节点</a>
+      <a class="ghost-btn link-plain" href="/nodes/new-import">导入节点</a>
+      <a class="ghost-btn link-plain" href="/nodes/import">批量导入</a>
+      {% elif is_import_form %}
+      <a class="ghost-btn link-plain" href="/nodes/new">切到单节点</a>
+      <a class="ghost-btn link-plain" href="/nodes/new-chain">新建链式节点</a>
+      <a class="ghost-btn link-plain" href="/nodes/import">批量导入</a>
       {% else %}
       <a class="ghost-btn link-plain" href="/nodes/new-chain">新建链式节点</a>
+      <a class="ghost-btn link-plain" href="/nodes/new-import">导入节点</a>
+      <a class="ghost-btn link-plain" href="/nodes/import">批量导入</a>
       {% endif %}
-      <a class="ghost-btn link-plain" href="{% if node_id %}/nodes/{{ node_id }}{% else %}/nodes{% endif %}">返回</a>
+      <a class="ghost-btn link-plain" href="{% if node_id %}/nodes/{{ node_id }}{% else %}{% if is_import_form %}/nodes#imported{% elif is_chain_form %}/nodes#chain{% else %}/nodes#direct{% endif %}{% endif %}">返回</a>
     </div>
   </div>
 
@@ -46,7 +56,7 @@
       {% if is_chain_form %}
       <input type="hidden" name="protocol_type" value="{{ protocol_chain }}">
       <div class="full-span">
-        <div class="field-note">链式节点必须选择一个 Reality 前置节点；后端可选择 Reality 或 tunnel 落地节点。客户端最终连接前置节点，后端作为落地出口。</div>
+        <div class="field-note">链式节点必须选择一个 Reality 前置节点；后端可选择 Reality 或仅导入 VLESS 落地节点。客户端最终连接前置节点，后端作为落地出口。</div>
       </div>
       <label>
         <span>前置节点</span>
@@ -62,7 +72,9 @@
         <select name="backend_node_id" required>
           <option value="">请选择后端节点</option>
           {% for item in backend_nodes %}
-          {% if item['protocol_type'] == protocol_tunnel %}
+          {% if item['protocol_type'] == protocol_import %}
+          <option value="{{ item['node_id'] }}" {% if form_values.get('backend_node_id') == item['node_id'] %}selected{% endif %}>{{ item['name'] }} · 仅导入 · {{ item['ip'] }}:{{ item['public_port'] }}</option>
+          {% elif item['protocol_type'] == protocol_tunnel %}
           <option value="{{ item['node_id'] }}" {% if form_values.get('backend_node_id') == item['node_id'] %}selected{% endif %}>{{ item['name'] }} · tunnel · {{ item['cf_host'] }}:443</option>
           {% else %}
           <option value="{{ item['node_id'] }}" {% if form_values.get('backend_node_id') == item['node_id'] %}selected{% endif %}>{{ item['name'] }} · Reality · {{ item['ip'] }}:{{ item['public_port'] }}</option>
@@ -80,6 +92,30 @@
       <input type="hidden" name="ssh_password" value="{{ form_values.get('ssh_password', '') }}">
       <input type="hidden" name="public_port" value="{{ form_values.get('public_port', '') }}">
       <input type="hidden" name="listen_port" value="{{ form_values.get('listen_port', '') }}">
+      {% elif is_import_form %}
+      <input type="hidden" name="protocol_type" value="{{ protocol_import }}">
+      {% if mode == 'edit' %}<input type="hidden" name="_import_edit_locked" value="1">{% endif %}
+      <input type="hidden" name="ip" value="{{ form_values.get('ip', '') }}">
+      <input type="hidden" name="ssh_port" value="{{ form_values.get('ssh_port', '') }}">
+      <input type="hidden" name="ssh_user" value="{{ form_values.get('ssh_user', '') }}">
+      <input type="hidden" name="ssh_password" value="{{ form_values.get('ssh_password', '') }}">
+      <input type="hidden" name="public_port" value="{{ form_values.get('public_port', '') }}">
+      <input type="hidden" name="listen_port" value="{{ form_values.get('listen_port', '') }}">
+      <label class="full-span {% if mode == 'edit' %}readonly-field{% endif %}">
+        <span>VLESS 链接</span>
+        <textarea name="last_vless_link" rows="5" placeholder="vless://..." {% if mode == 'edit' %}readonly{% else %}required{% endif %}>{{ form_values.get('last_vless_link', '') }}</textarea>
+      </label>
+      <label>
+        <span>地区代码覆盖</span>
+        <input type="text" name="manual_country_code" value="{{ form_values.get('manual_country_code', '') }}" maxlength="2" placeholder="node.example.com">
+      </label>
+      <label>
+        <span>地区显示名</span>
+        <input type="text" name="manual_region_label" value="{{ form_values.get('manual_region_label', '') }}" placeholder="日本 / 香港 / 美国">
+      </label>
+      <div class="full-span">
+        <div class="field-note">导入后会解析并显示链接中的主机、端口和备注。编辑时只允许修改节点名与地区；原始链接不在此处改写。</div>
+      </div>
       {% else %}
       <label>
         <span>协议</span>
@@ -90,7 +126,7 @@
       </label>
       <label>
         <span>NAT IP / DDNS 域名</span>
-        <input type="text" name="ip" value="{{ form_values['ip'] }}" placeholder="1.2.3.4 或 hinet.example.com" required>
+        <input type="text" name="ip" value="{{ form_values['ip'] }}" placeholder="203.0.113.10 或 node.example.com" required>
       </label>
       <label>
         <span>SSH 端口</span>
@@ -116,9 +152,16 @@
         <span>内网监听端口</span>
         <input type="number" name="listen_port" value="{{ form_values['listen_port'] }}" min="1" max="65535">
       </label>
+      <label class="vless-only">
+        <span>Reality 伪装目标</span>
+        <input type="text" name="selected_reality_target" value="{{ form_values.get('selected_reality_target') or 'www.example.com' }}" placeholder="www.example.com">
+      </label>
+      <div class="full-span vless-only">
+        <div class="field-note">只填域名，不带 https:// 和端口；脚本会同时写入 Reality server_name / handshake server，端口固定 443。</div>
+      </div>
       <label class="tunnel-only">
         <span>应用路由域名</span>
-        <input type="text" name="cf_host" value="{{ form_values.get('cf_host', '') }}" placeholder="jp02.holdzywoo.top">
+        <input type="text" name="cf_host" value="{{ form_values.get('cf_host', '') }}" placeholder="node.example.com">
       </label>
       <label class="tunnel-only">
         <span>本地 WS 端口</span>
@@ -143,13 +186,13 @@
       </label>
       <div class="full-span">
         <div class="field-note tunnel-note">Tunnel 模式默认本机 8080；Cloudflare Zero Trust 的 Public Hostname / 应用路由需要指向该本地端口。</div>
-        <div class="field-note vless-note">VLESS 模式这里可填固定 IP 或 DDNS 域名；部署 SSH 会自动解析域名，最终 VLESS 链接仍使用你填写的域名。地区留空则自动按当前解析 IP 识别；手动填写后优先使用手动值。</div>
+        <div class="field-note vless-note">VLESS 模式这里可填固定 IP 或 DDNS 域名；Reality 伪装目标可自定义，留默认即可；地区留空则自动按当前解析 IP 识别，手动填写后优先使用手动值。</div>
       </div>
       {% endif %}
     </div>
 
     <div class="form-footer">
-      <button type="submit">{% if mode == 'edit' %}保存修改{% else %}{% if is_chain_form %}创建链式节点{% else %}创建节点{% endif %}{% endif %}</button>
+      <button type="submit">{% if mode == 'edit' %}保存修改{% else %}{% if is_chain_form %}创建链式节点{% elif is_import_form %}导入节点{% else %}创建节点{% endif %}{% endif %}</button>
     </div>
   </form>
 </section>

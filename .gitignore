@@ -5,23 +5,12 @@ __pycache__/
 
 # Virtualenv
 .venv/
-.venv.old/
 
-# Runtime data (sensitive)
+# Runtime data
 data/*.db
-data/*.db.bak
-data/geo_cache.json
-data/uvicorn.pid
 logs/*.log
-logs/*.err
-logs/*.out
-
-# Environment (sensitive)
-.env
-.env.*
-!.env.example
 
 # OS / editor
 .DS_Store
-*.swp
-*.swo
+.env
+.env.*

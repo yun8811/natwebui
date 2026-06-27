@@ -16,7 +16,7 @@ from typing import Any
 
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
-from .config import AGENT_REPORT_PATH, APP_DIR
+from .config import AGENT_REPORT_PATH, APP_DIR, PUBLIC_BASE_URL
 from .regions import replace_vless_fragment, vless_remark_for_node
 
 REMOTE_APP_DIR = "/opt/natctl"
@@ -43,6 +43,17 @@ class DeployError(Exception):
 
 
 @dataclass
+class DeployedNodeResult:
+    node_id: str
+    generated_vless_link: str
+    generated_uuid: str
+    generated_private_key: str
+    generated_public_key: str
+    generated_short_id: str
+    selected_reality_target: str
+
+
+@dataclass
 class DeployResult:
     summary_log: str
     raw_log: str
@@ -52,6 +63,7 @@ class DeployResult:
     generated_public_key: str
     generated_short_id: str
     selected_reality_target: str
+    node_results: list[DeployedNodeResult] | None = None
 
 
 def normalize_host_value(value: str) -> str:
@@ -134,8 +146,9 @@ def shell_quote(value: str) -> str:
 
 
 
-def choose_reality_target() -> str:
-    return "www.microsoft.com"
+def choose_reality_target(node: dict | None = None) -> str:
+    target = str((node or {}).get("selected_reality_target") or "").strip().lower()
+    return target or "www.example.com"
 
 
 
@@ -180,15 +193,30 @@ def _fetch_latest_singbox() -> dict[str, Any]:
 
 
 def build_singbox_config(node: dict, *, generated_uuid: str, generated_private_key: str, generated_short_id: str, selected_reality_target: str) -> str:
-    config = {
-        "log": {"level": "info"},
-        "inbounds": [
+    return build_multi_singbox_config([
+        {
+            "node": node,
+            "generated_uuid": generated_uuid,
+            "generated_private_key": generated_private_key,
+            "generated_short_id": generated_short_id,
+            "selected_reality_target": selected_reality_target,
+        }
+    ])
+
+
+def build_multi_singbox_config(entries: list[dict[str, Any]]) -> str:
+    inbounds = []
+    for entry in entries:
+        node = entry["node"]
+        selected_reality_target = entry["selected_reality_target"]
+        node_id = str(node.get("node_id") or "node")
+        inbounds.append(
             {
                 "type": "vless",
-                "tag": "vless-reality-in",
+                "tag": f"vless-reality-{node_id}",
                 "listen": "::",
                 "listen_port": int(node["listen_port"]),
-                "users": [{"uuid": generated_uuid, "flow": "xtls-rprx-vision"}],
+                "users": [{"uuid": entry["generated_uuid"], "flow": "xtls-rprx-vision"}],
                 "tls": {
                     "enabled": True,
                     "server_name": selected_reality_target,
@@ -198,14 +226,13 @@ def build_singbox_config(node: dict, *, generated_uuid: str, generated_private_k
                             "server": selected_reality_target,
                             "server_port": 443,
                         },
-                        "private_key": generated_private_key,
-                        "short_id": [generated_short_id],
+                        "private_key": entry["generated_private_key"],
+                        "short_id": [entry["generated_short_id"]],
                     },
                 },
             }
-        ],
-        "outbounds": [{"type": "direct", "tag": "direct"}],
-    }
+        )
+    config = {"log": {"level": "info"}, "inbounds": inbounds, "outbounds": [{"type": "direct", "tag": "direct"}]}
     return json.dumps(config, ensure_ascii=False, indent=2)
 
 
@@ -276,67 +303,98 @@ def build_tunnel_vless_link(node: dict, *, generated_uuid: str) -> str:
 
 
 def build_node_meta(node: dict, *, generated_uuid: str, generated_public_key: str, generated_short_id: str, selected_reality_target: str) -> str:
-    payload = {
-        "node_id": node["node_id"],
-        "protocol_type": node["protocol_type"],
-        "public_port": node["public_port"],
-        "listen_port": node["listen_port"],
-        "selected_reality_target": selected_reality_target,
-        "generated_uuid": generated_uuid,
-        "generated_public_key": generated_public_key,
-        "generated_short_id": generated_short_id,
-        "agent_token": node["agent_token"],
-    }
+    return build_multi_node_meta([
+        {
+            "node": node,
+            "generated_uuid": generated_uuid,
+            "generated_public_key": generated_public_key,
+            "generated_short_id": generated_short_id,
+            "selected_reality_target": selected_reality_target,
+        }
+    ])
+
+
+def build_multi_node_meta(entries: list[dict[str, Any]]) -> str:
+    nodes = []
+    for entry in entries:
+        node = entry["node"]
+        nodes.append(
+            {
+                "node_id": node["node_id"],
+                "protocol_type": node["protocol_type"],
+                "public_port": node["public_port"],
+                "listen_port": node["listen_port"],
+                "selected_reality_target": entry["selected_reality_target"],
+                "generated_uuid": entry["generated_uuid"],
+                "generated_public_key": entry["generated_public_key"],
+                "generated_short_id": entry["generated_short_id"],
+                "agent_token": node["agent_token"],
+            }
+        )
+    payload = nodes[0].copy()
+    payload["nodes"] = nodes
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
-
 def build_agent_script(node: dict) -> str:
-    report_url = f"http://YOUR_PANEL_IP:8788{AGENT_REPORT_PATH}"
-    return textwrap.dedent(
-        f"""\
-        #!/bin/sh
-        set -eu
-        meta_file={shell_quote(REMOTE_META_FILE)}
-        if [ ! -f "$meta_file" ]; then
-          echo "missing meta file" >&2
-          exit 1
-        fi
-        if ! command -v curl >/dev/null 2>&1; then
-          apk add --no-cache curl >/dev/null
-        fi
-        hostname_val=$(hostname 2>/dev/null || echo unknown)
-        report_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-        python3 - <<'PYEOF' > /tmp/natctl-agent-report.json
+    if not PUBLIC_BASE_URL:
+        raise DeployError("prepare", "缺少 NAT_WEBUI_PUBLIC_BASE_URL，无法生成 Agent 上报地址", "NAT_WEBUI_PUBLIC_BASE_URL is required")
+    report_url = f"{PUBLIC_BASE_URL}{AGENT_REPORT_PATH}"
+    public_ip = json.dumps(node["ip"], ensure_ascii=False)
+    script = """#!/bin/sh
+set -eu
+meta_file={meta_file}
+if [ ! -f "$meta_file" ]; then
+  echo "missing meta file" >&2
+  exit 1
+fi
+if ! command -v curl >/dev/null 2>&1; then
+  apk add --no-cache curl >/dev/null
+fi
+hostname_val=$(hostname 2>/dev/null || echo unknown)
+report_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+python3 - <<'PYEOF' > /tmp/natctl-agent-reports.jsonl
 import json
 from pathlib import Path
-meta = json.loads(Path({REMOTE_META_FILE!r}).read_text())
-payload = {{
-    "node_id": meta["node_id"],
-    "agent_token": meta["agent_token"],
-    "overall_status": "online",
-    "report_time": {"__REPORT_TIME__"!r},
-    "hostname": {"__HOSTNAME__"!r},
-    "public_ip": {node['ip']!r},
-    "public_port": meta.get("public_port"),
-    "listen_port": meta.get("listen_port"),
-    "protocol_type": meta.get("protocol_type"),
-    "generated_uuid": meta.get("generated_uuid"),
-    "generated_public_key": meta.get("generated_public_key"),
-    "generated_short_id": meta.get("generated_short_id"),
-    "selected_reality_target": meta.get("selected_reality_target"),
-}}
-print(json.dumps(payload, ensure_ascii=False))
+meta = json.loads(Path({meta_file_py}).read_text())
+nodes = meta.get("nodes") or [meta]
+report_time = "__REPORT_TIME__"
+hostname = "__HOSTNAME__"
+public_ip = {public_ip}
+for item in nodes:
+    payload = {{
+        "node_id": item["node_id"],
+        "agent_token": item["agent_token"],
+        "overall_status": "online",
+        "report_time": report_time,
+        "hostname": hostname,
+        "public_ip": public_ip,
+        "public_port": item.get("public_port"),
+        "listen_port": item.get("listen_port"),
+        "protocol_type": item.get("protocol_type"),
+        "generated_uuid": item.get("generated_uuid"),
+        "generated_public_key": item.get("generated_public_key"),
+        "generated_short_id": item.get("generated_short_id"),
+        "selected_reality_target": item.get("selected_reality_target"),
+    }}
+    print(json.dumps(payload, ensure_ascii=False))
 PYEOF
-        sed -i "s/__REPORT_TIME__/$report_time/g; s/__HOSTNAME__/$hostname_val/g" /tmp/natctl-agent-report.json
-        curl -fsS -H 'Content-Type: application/json' --data @/tmp/natctl-agent-report.json {shell_quote(report_url)}
-        """
+sed -i "s/__REPORT_TIME__/$report_time/g; s/__HOSTNAME__/$hostname_val/g" /tmp/natctl-agent-reports.jsonl
+while IFS= read -r payload; do
+  [ -n "$payload" ] || continue
+  printf '%s' "$payload" | curl -fsS -H 'Content-Type: application/json' --data-binary @- {report_url} >/dev/null
+done < /tmp/natctl-agent-reports.jsonl
+"""
+    return script.format(
+        meta_file=shell_quote(REMOTE_META_FILE),
+        meta_file_py=repr(REMOTE_META_FILE),
+        public_ip=public_ip,
+        report_url=shell_quote(report_url),
     )
 
 
-
 def build_remote_script(node: dict, *, singbox_config: str, node_meta: str, agent_script: str, singbox_archive_url: str, singbox_archive_name: str) -> str:
-    cron_block = "*/5 * * * * /opt/natctl/agent/report.sh >> /opt/natctl/logs/agent.log 2>&1"
+    cron_block = "* * * * * /opt/natctl/agent/report.sh >> /opt/natctl/logs/agent.log 2>&1"
     openrc_script = textwrap.dedent(
         """\
         #!/sbin/openrc-run
@@ -370,7 +428,7 @@ def build_remote_script(node: dict, *, singbox_config: str, node_meta: str, agen
     return textwrap.dedent(
         f"""\
         set -eu
-        mkdir -p {shell_quote(REMOTE_BIN_DIR)} {shell_quote(REMOTE_AGENT_DIR)} {shell_quote(REMOTE_STATE_DIR)} {shell_quote(REMOTE_LOG_DIR)} {shell_quote(REMOTE_SINGBOX_DIR)} /tmp/natctl-singbox
+        mkdir -p {shell_quote(REMOTE_BIN_DIR)} {shell_quote(REMOTE_AGENT_DIR)} {shell_quote(REMOTE_STATE_DIR)} {shell_quote(REMOTE_LOG_DIR)} {shell_quote(REMOTE_SINGBOX_DIR)} /tmp/natctl-singbox /etc/systemd/system
         if command -v apk >/dev/null 2>&1; then
           apk add --no-cache curl ca-certificates tar gzip python3 coreutils iproute2 >/dev/null
         elif command -v apt-get >/dev/null 2>&1; then
@@ -407,12 +465,45 @@ Path('/etc/init.d/sing-box').write_text({openrc_script!r})
 Path('/etc/systemd/system/sing-box.service').write_text({systemd_script!r})
 PYEOF
         chmod +x {shell_quote(REMOTE_AGENT_SCRIPT)} /etc/init.d/sing-box
+        if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+          systemctl stop sing-box >/dev/null 2>&1 || true
+        fi
+        if command -v rc-service >/dev/null 2>&1; then
+          rc-service sing-box stop >/dev/null 2>&1 || true
+        fi
+        sleep 1
+        if command -v ss >/dev/null 2>&1; then
+          port_pids=$(ss -ltnp 2>/dev/null | awk '$4 ~ /:{int(node["listen_port"])}$/ {{print $0}}' | sed -En 's/.*pid=([0-9][0-9]*).*/\\1/p' | sort -u)
+          for pid in $port_pids; do
+            cmdline=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)
+            case "$cmdline" in
+              *'/usr/local/bin/sing-box run -c /etc/sing-box/config.json'*|*'sing-box run -c /etc/sing-box/config.json'*)
+                echo "INFO: stopping stale NAT WebUI sing-box process $pid on port {int(node["listen_port"])}"
+                kill "$pid" 2>/dev/null || true
+                ;;
+              *)
+                echo "ERROR: port {int(node["listen_port"])} is occupied by non-NAT-WebUI process: $pid $cmdline"
+                ss -ltnp 2>/dev/null | awk '$4 ~ /:{int(node["listen_port"])}$/ {{print $0}}' || true
+                exit 1
+                ;;
+            esac
+          done
+          sleep 1
+          if ss -ltnp 2>/dev/null | awk '$4 ~ /:{int(node["listen_port"])}$/ {{print $0}}' | grep -q .; then
+            echo 'ERROR: sing-box listen port is still occupied after cleanup'
+            ss -ltnp 2>/dev/null | awk '$4 ~ /:{int(node["listen_port"])}$/ {{print $0}}' || true
+            exit 1
+          fi
+        else
+          pkill -f 'sing-box run -c /etc/sing-box/config.json' 2>/dev/null || true
+          sleep 1
+        fi
         if ! /usr/local/bin/sing-box check -c /etc/sing-box/config.json >/opt/natctl/logs/sing-box-check.log 2>&1; then
           echo 'ERROR: sing-box config check failed'
           cat /opt/natctl/logs/sing-box-check.log
           exit 1
         fi
-        if command -v systemctl >/dev/null 2>&1; then
+        if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
           systemctl daemon-reload >/dev/null 2>&1 || true
           systemctl enable sing-box >/dev/null 2>&1 || true
           systemctl restart sing-box >/dev/null 2>&1
@@ -474,7 +565,7 @@ def build_tunnel_remote_script(
     agent_script: str,
     singbox_assets: dict[str, dict[str, str]],
 ) -> str:
-    cron_block = "*/5 * * * * /opt/natctl/agent/report.sh >> /opt/natctl/logs/agent.log 2>&1"
+    cron_block = "* * * * * /opt/natctl/agent/report.sh >> /opt/natctl/logs/agent.log 2>&1"
     cf_token = str(node.get("cf_tunnel_token") or "").strip()
     listen_port = int(node.get("ws_port") or node.get("listen_port") or 8080)
     amd64_url = singbox_assets.get("amd64", {}).get("url", "")
@@ -622,11 +713,113 @@ def build_vless_link(node: dict, *, generated_uuid: str, generated_public_key: s
         (
             f"vless://{generated_uuid}@{public_host}:{node['public_port']}"
             f"?security=reality&sni={selected_reality_target}&pbk={generated_public_key}"
-            f"&sid={generated_short_id}&fp=chrome&alpn=h2,http/1.1&type=tcp&flow=xtls-rprx-vision"
+            f"&sid={generated_short_id}&type=tcp&flow=xtls-rprx-vision"
         ),
         vless_remark_for_node(node, allow_lookup=True),
     )
 
+
+
+def run_multi_real_deploy(nodes: list[dict]) -> DeployResult:
+    if not nodes:
+        raise DeployError("prepare", "没有可部署节点", "empty node list")
+    primary_node = nodes[0]
+    entries = []
+    for item in nodes:
+        generated_uuid, generated_private_key, generated_public_key, generated_short_id = generate_reality_materials()
+        selected_reality_target = choose_reality_target(item)
+        entries.append(
+            {
+                "node": item,
+                "generated_uuid": generated_uuid,
+                "generated_private_key": generated_private_key,
+                "generated_public_key": generated_public_key,
+                "generated_short_id": generated_short_id,
+                "selected_reality_target": selected_reality_target,
+            }
+        )
+    singbox_config = build_multi_singbox_config(entries)
+    node_meta = build_multi_node_meta(entries)
+    agent_script = build_agent_script(primary_node)
+    singbox_release = _fetch_latest_singbox()
+    logs: list[str] = []
+
+    def add(stage: str, output: str) -> None:
+        logs.append(f"[stage] {stage}\n{output}".rstrip())
+
+    executor = RemoteExecutor(
+        host=str(primary_node["ip"]),
+        port=int(primary_node["ssh_port"]),
+        user=str(primary_node["ssh_user"]),
+        password=str(primary_node["ssh_password"]),
+    )
+    try:
+        add("ssh_probe", executor.run("echo CONNECTED", timeout=25))
+    except Exception as exc:
+        raw = "\n".join(logs + [f"SSH probe failed: {exc}"])
+        raise DeployError("ssh_probe", "SSH 连接失败", raw)
+    try:
+        add("system_probe", executor.run("uname -a; cat /etc/alpine-release 2>/dev/null || cat /etc/os-release", timeout=30))
+    except Exception as exc:
+        raw = "\n".join(logs + [f"System probe failed: {exc}"])
+        raise DeployError("system_probe", "系统探测失败", raw)
+    try:
+        remote_script = build_remote_script(
+            primary_node,
+            singbox_config=singbox_config,
+            node_meta=node_meta,
+            agent_script=agent_script,
+            singbox_archive_url=singbox_release["url"],
+            singbox_archive_name=singbox_release["name"],
+        )
+        add("deploy", executor.run(remote_script, timeout=420))
+    except Exception as exc:
+        raw = "\n".join(logs + [f"Deploy failed: {exc}"])
+        raise DeployError("deploy", "远端部署失败", raw)
+
+    node_results = []
+    for entry in entries:
+        node = entry["node"]
+        generated_vless_link = build_vless_link(
+            node,
+            generated_uuid=entry["generated_uuid"],
+            generated_public_key=entry["generated_public_key"],
+            generated_short_id=entry["generated_short_id"],
+            selected_reality_target=entry["selected_reality_target"],
+        )
+        node_results.append(
+            DeployedNodeResult(
+                node_id=node["node_id"],
+                generated_vless_link=generated_vless_link,
+                generated_uuid=entry["generated_uuid"],
+                generated_private_key=entry["generated_private_key"],
+                generated_public_key=entry["generated_public_key"],
+                generated_short_id=entry["generated_short_id"],
+                selected_reality_target=entry["selected_reality_target"],
+            )
+        )
+    primary_result = next((item for item in node_results if item.node_id == primary_node["node_id"]), node_results[0])
+    ports = ", ".join(str(entry["node"]["listen_port"]) for entry in entries)
+    summary = textwrap.dedent(
+        f"""\
+        真实部署已完成
+        目标节点：{primary_node['ip']}:{primary_node['ssh_port']}
+        同 VPS 节点数：{len(entries)}
+        监听端口：{ports}
+        sing-box：{singbox_release['name']}
+        """
+    ).strip()
+    return DeployResult(
+        summary_log=summary,
+        raw_log="\n".join(logs),
+        generated_vless_link=primary_result.generated_vless_link,
+        generated_uuid=primary_result.generated_uuid,
+        generated_private_key=primary_result.generated_private_key,
+        generated_public_key=primary_result.generated_public_key,
+        generated_short_id=primary_result.generated_short_id,
+        selected_reality_target=primary_result.selected_reality_target,
+        node_results=node_results,
+    )
 
 
 def run_real_deploy(node: dict) -> DeployResult:
@@ -647,7 +840,7 @@ def run_real_deploy(node: dict) -> DeployResult:
 
     protocol_type = str(node.get("protocol_type") or "vless")
     generated_uuid, generated_private_key, generated_public_key, generated_short_id = generate_reality_materials()
-    selected_reality_target = choose_reality_target()
+    selected_reality_target = choose_reality_target(node)
 
     if protocol_type == "cf_vless_ws":
         singbox_config = build_tunnel_singbox_config(node, generated_uuid=generated_uuid)

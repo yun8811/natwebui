@@ -2,14 +2,20 @@
 {% block title %}{{ title or "导入节点" }}{% endblock %}
 {% block content %}
 <div class="container">
-  <h2>📥 批量导入 VLESS 节点</h2>
+  <div class="top-sub-actions" style="justify-content:space-between;margin-bottom:16px;">
+    <a class="ghost-btn link-plain" href="/nodes#imported">← 返回节点列表</a>
+    <a class="ghost-btn link-plain" href="/nodes/new-import">单节点导入</a>
+    <form method="post" action="/logout" style="margin:0;">
+      <button class="ghost-btn" type="submit">退出登录</button>
+    </form>
+  </div>
+  <h2>📥 批量导入</h2>
   <p>每行粘贴一个 VLESS 链接，以 <code>#</code> 开头的行会被忽略。</p>
 
   <form method="post" action="/nodes/import">
-    <textarea name="links" rows="12" style="width:100%;font-family:monospace;font-size:13px;border:1px solid #ccc;border-radius:6px;padding:10px;"
-      placeholder="vless://uuid@1.2.3.4:443?security=reality&...&#node-name
-vless://uuid@5.6.7.8:8443?encryption=none&...&#another-node"></textarea>
-    <button type="submit" style="margin-top:12px;padding:10px 24px;font-size:15px;">导入</button>
+    <textarea name="links" rows="12" style="width:100%;font-family:monospace;font-size:13px;border:1px solid #ccc;border-radius:6px;padding:10px;" placeholder="vless://uuid@203.0.113.10:443?security=reality&...&#node-name
+vless://uuid@203.0.113.11:8443?encryption=none&...&#another-node"></textarea>
+    <button class="link-btn" type="submit" style="margin-top:12px;">批量导入</button>
   </form>
 
   {% if result %}

@@ -198,7 +198,7 @@ def list_chain_backend_nodes() -> list[sqlite3.Row]:
         return conn.execute(
             """
             SELECT * FROM nodes
-            WHERE protocol_type = 'vless_reality_singbox'
+            WHERE protocol_type IN ('vless_reality_singbox', 'imported_vless')
               AND TRIM(COALESCE(ip, '')) != ''
               AND COALESCE(public_port, 0) > 0
               AND TRIM(COALESCE(last_vless_link, '')) != ''
@@ -222,6 +222,44 @@ def list_subscribable_nodes(protocol_type: str | Sequence[str] | None = None) ->
     with get_conn() as conn:
         return conn.execute(query, tuple(params)).fetchall()
 
+
+
+
+
+def list_direct_vless_nodes_by_endpoint(ip: str, ssh_port: int) -> list[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT * FROM nodes
+            WHERE protocol_type = 'vless_reality_singbox'
+              AND ip = ?
+              AND ssh_port = ?
+            ORDER BY created_at ASC, updated_at ASC
+            """,
+            (ip, ssh_port),
+        ).fetchall()
+
+
+def find_direct_vless_port_conflict(
+    ip: str,
+    public_port: int,
+    listen_port: int,
+    *,
+    exclude_node_id: str | None = None,
+) -> sqlite3.Row | None:
+    query = """
+        SELECT * FROM nodes
+        WHERE protocol_type = 'vless_reality_singbox'
+          AND ip = ?
+          AND (public_port = ? OR listen_port = ?)
+    """
+    params: list[Any] = [ip, public_port, listen_port]
+    if exclude_node_id:
+        query += " AND node_id != ?"
+        params.append(exclude_node_id)
+    query += " ORDER BY updated_at DESC, created_at DESC LIMIT 1"
+    with get_conn() as conn:
+        return conn.execute(query, tuple(params)).fetchone()
 
 
 def get_node(node_id: str) -> sqlite3.Row | None:
@@ -480,6 +518,7 @@ def update_node_record(node_id: str, payload: dict[str, Any]) -> None:
                 listen_port = ?,
                 manual_country_code = ?,
                 manual_region_label = ?,
+                selected_reality_target = ?,
                 last_vless_link = ?,
                 cf_host = ?,
                 cf_tunnel_token = ?,
@@ -502,6 +541,7 @@ def update_node_record(node_id: str, payload: dict[str, Any]) -> None:
                 payload["listen_port"],
                 payload.get("manual_country_code"),
                 payload.get("manual_region_label"),
+                payload.get("selected_reality_target"),
                 payload.get("last_vless_link"),
                 payload.get("cf_host"),
                 payload.get("cf_tunnel_token"),
@@ -698,16 +738,12 @@ def create_demo_node() -> None:
                 None,
                 443,
                 443,
-                "www.microsoft.com",
+                "www.example.com",
                 "11111111-1111-1111-1111-111111111111",
                 "demo-private-key",
                 "demo-public-key",
                 "abcd1234",
                 "",
-                None,
-                None,
-                8080,
-                "/",
                 "demo-agent-token",
                 "never_deployed",
                 None,
@@ -850,9 +886,11 @@ def mark_deployment_failed(
         current_status = node["status"] if node else ""
         has_existing_link = bool(node and str(node["last_vless_link"] or "").strip())
         has_recent_report = bool(node and str(node["last_seen_at"] or "").strip())
-        if current_status in {"online", "offline"}:
-            next_status = current_status or "offline"
+        if current_status == "online":
+            next_status = "online"
         elif has_existing_link or has_recent_report:
+            next_status = "online"
+        elif current_status == "offline":
             next_status = "offline"
         else:
             next_status = "deploy_failed"
@@ -883,6 +921,7 @@ def update_node_generated_fields(
                 generated_public_key = ?,
                 generated_short_id = ?,
                 last_vless_link = ?,
+                status = ?,
                 updated_at = ?
             WHERE node_id = ?
             """,
@@ -893,11 +932,33 @@ def update_node_generated_fields(
                 generated_public_key,
                 generated_short_id,
                 last_vless_link,
+                "online",
                 now_iso(),
                 node_id,
             ),
         )
 
+
+
+def set_node_generated_fields(
+    node_id: str,
+    *,
+    selected_reality_target: str,
+    generated_uuid: str,
+    generated_public_key: str,
+    generated_short_id: str,
+    last_vless_link: str,
+    generated_private_key: str = "",
+) -> None:
+    update_node_generated_fields(
+        node_id,
+        selected_reality_target=selected_reality_target,
+        generated_uuid=generated_uuid,
+        generated_private_key=generated_private_key,
+        generated_public_key=generated_public_key,
+        generated_short_id=generated_short_id,
+        last_vless_link=last_vless_link,
+    )
 
 
 def mark_node_deployed_from_report(node_id: str, payload: dict[str, Any]) -> None:
@@ -924,13 +985,12 @@ def mark_node_deployed_from_report(node_id: str, payload: dict[str, Any]) -> Non
         node_name = node["name"] or node_id
         last_vless_link = node["last_vless_link"] or ""
         if not selected_reality_target:
-            selected_reality_target = "www.microsoft.com"
+            selected_reality_target = "www.example.com"
         if not last_vless_link:
             last_vless_link = (
                 f"vless://{generated_uuid}@{public_ip}:{public_port}"
                 f"?security=reality&sni={selected_reality_target}"
                 f"&pbk={generated_public_key}&sid={generated_short_id}"
-                f"&fp=chrome&alpn=h2,http/1.1"
                 f"&type=tcp&flow=xtls-rprx-vision#{node_name}"
             )
         conn.execute(

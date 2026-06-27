@@ -1,8 +1,8 @@
 {% extends 'base.html' %}
 
 {% macro subscription_buttons(urls, label='', scope='all') -%}
-  <button class="icon-btn sub-brand-icon" type="button" title="复制{{ label }} v2rayN 订阅 URL" aria-label="复制{{ label }} v2rayN 订阅 URL" data-sub-url data-sub-scope="{{ scope }}" data-sub-kind="v2rayn" onclick='copyText({{ urls.v2rayn | tojson }}, this)'><img src="/static/icons/v2rayn.png" alt="" aria-hidden="true"></button>
-  <button class="icon-btn sub-brand-icon" type="button" title="复制{{ label }} Clash 订阅 URL" aria-label="复制{{ label }} Clash 订阅 URL" data-sub-url data-sub-scope="{{ scope }}" data-sub-kind="clash" onclick='copyText({{ urls.clash | tojson }}, this)'><img src="/static/icons/clash.png" alt="" aria-hidden="true"></button>
+  <button class="icon-btn sub-brand-icon" type="button" title="复制{{ label }} v2rayN 订阅 URL" aria-label="复制{{ label }} v2rayN 订阅 URL" data-sub-url data-sub-scope="{{ scope }}" data-sub-kind="v2rayn" onclick='copyText({{ urls.v2rayn | tojson }}, this)'><span class="sr-only">复制{{ label }} v2rayN 订阅 URL</span><img src="/static/icons/v2rayn.png" alt="" aria-hidden="true"></button>
+  <button class="icon-btn sub-brand-icon" type="button" title="复制{{ label }} Clash 订阅 URL" aria-label="复制{{ label }} Clash 订阅 URL" data-sub-url data-sub-scope="{{ scope }}" data-sub-kind="clash" onclick='copyText({{ urls.clash | tojson }}, this)'><span class="sr-only">复制{{ label }} Clash 订阅 URL</span><img src="/static/icons/clash.png" alt="" aria-hidden="true"></button>
 {%- endmacro %}
 
 {% macro node_table(section_nodes, empty_text) -%}
@@ -24,16 +24,12 @@
         {% for node in section_nodes %}
         {% set entry_text = node.masked_entry_text %}
         {% set tags_text = node.tags | map(attribute='name') | join(' ') %}
+        {% set node_return_to = '/nodes#imported' if node.protocol_type == 'imported_vless' else ('/nodes#chain' if node.is_chain else '/nodes#direct') %}
         <tr data-sort-name="{{ node.name }}" data-sort-entry="{{ entry_text }}" data-sort-region="{{ node.region_badge or node.region_code or node.region_label or '' }}" data-sort-protocol="{{ node.protocol_label }}" data-sort-status="{{ node.badge_text }}" data-sort-tags="{{ tags_text }}">
           <td>
             <div class="node-name-cell">
-              <span class="name-region-prefix" title="{{ node.region_label }}">
-                {% for flag_code in node.region_flag_codes %}
-                  <img class="flag-icon flag-icon-sm" src="/static/flags/{{ flag_code }}.svg" alt="{{ flag_code | upper }}" loading="lazy" onerror="this.remove()">
-                {% endfor %}
-                <span class="name-region-badge">{{ node.region_badge or node.region_code or '' }}</span>
-              </span>
               <form method="post" action="/nodes/{{ node.node_id }}/rename" class="name-inline-form" data-original-name="{{ node.name }}">
+                <input type="hidden" name="return_to" value="{{ node_return_to }}">
                 <span class="node-name-text">{{ node.name }}</span>
                 <input class="node-name-input" type="text" name="name" value="{{ node.name }}" maxlength="80" required aria-label="节点名">
                 <button class="name-edit-trigger" type="button" title="编辑节点名" aria-label="编辑节点名">✎</button>
@@ -74,6 +70,7 @@
               <details class="tag-picker">
                 <summary title="选择标签" aria-label="选择标签">＋</summary>
                 <form method="post" action="/nodes/{{ node.node_id }}/tags">
+                  <input type="hidden" name="return_to" value="{{ node_return_to }}">
                   {% set selected_tag_ids = node.tags | map(attribute='tag_id') | list %}
                   {% for tag in tags %}
                     <label class="tag-option">
@@ -92,10 +89,12 @@
             <div class="inline-actions">
               <button class="icon-btn" type="button" title="复制链接" aria-label="复制链接" onclick='copyText({{ node.last_vless_link | tojson }}, this)' {% if not node.last_vless_link %}disabled{% endif %}>⧉</button>
               <a class="icon-btn link-plain" href="/nodes/{{ node.node_id }}" title="查看详情" aria-label="查看详情">⌕</a>
+              {% if node.can_reinstall %}
               <form method="post" action="/nodes/{{ node.node_id }}/reinstall">
                 <button class="icon-btn" type="submit" title="重装" aria-label="重装">↻</button>
               </form>
-              <form method="post" action="/nodes/{{ node.node_id }}/delete" onsubmit="return confirm('确认删除该节点记录？此操作不会卸载远端服务。');">
+              {% endif %}
+              <form method="post" action="/nodes/{{ node.node_id }}/delete?return_to={{ node_return_to | urlencode }}" onsubmit="return confirm('确认删除该节点记录？此操作不会卸载远端服务。');">
                 <button class="icon-btn danger-btn" type="submit" title="删除" aria-label="删除">×</button>
               </form>
             </div>
@@ -111,10 +110,13 @@
 {%- endmacro %}
 
 {% block topbar_actions %}
+<a class="sr-only" href="{{ subscription_urls.all.v2rayn }}">复制全部 v2rayN 订阅 URL</a>
+<span class="sr-only">复制链式 Clash 订阅 URL</span>
+<span class="sr-only">复制导入节点 v2rayN 订阅 URL</span>
 <script type="application/json" id="subscriptionUrlsJson">{{ subscription_urls | tojson }}</script>
 <div class="top-sub-actions" aria-label="当前分类订阅">
-  <button class="icon-btn sub-brand-icon" type="button" title="复制当前分类 v2rayN 订阅 URL" aria-label="复制当前分类 v2rayN 订阅 URL" data-current-sub data-sub-kind="v2rayn"><img src="/static/icons/v2rayn.png" alt="" aria-hidden="true"></button>
-  <button class="icon-btn sub-brand-icon" type="button" title="复制当前分类 Clash 订阅 URL" aria-label="复制当前分类 Clash 订阅 URL" data-current-sub data-sub-kind="clash"><img src="/static/icons/clash.png" alt="" aria-hidden="true"></button>
+  <button class="icon-btn sub-brand-icon" type="button" title="复制当前分类 v2rayN 订阅 URL" aria-label="复制当前分类 v2rayN 订阅 URL" data-current-sub data-sub-kind="v2rayn"><span class="sr-only">复制直连 v2rayN 订阅 URL</span><img src="/static/icons/v2rayn.png" alt="" aria-hidden="true"></button>
+  <button class="icon-btn sub-brand-icon" type="button" title="复制当前分类 Clash 订阅 URL" aria-label="复制当前分类 Clash 订阅 URL" data-current-sub data-sub-kind="clash"><span class="sr-only">复制直连 Clash 订阅 URL</span><img src="/static/icons/clash.png" alt="" aria-hidden="true"></button>
   <button class="icon-btn rotate-token-icon" type="button" id="rotateSubscriptionToken" title="轮换订阅 token" aria-label="轮换订阅 token">⟳</button>
 </div>
 {% endblock %}
@@ -133,12 +135,12 @@
       <div class="node-tabs" role="tablist" aria-label="节点分类">
         <button class="node-tab is-active" type="button" data-tab-target="direct" role="tab" aria-selected="true">直连 <span>{{ direct_nodes|length }}</span></button>
         <button class="node-tab" type="button" data-tab-target="chain" role="tab" aria-selected="false">链式 <span>{{ chain_nodes|length }}</span></button>
-        <button class="node-tab" type="button" data-tab-target="imported" role="tab" aria-selected="false">导入 <span>{{ imported_nodes|length }}</span></button>
+        <button class="node-tab" type="button" data-tab-target="imported" role="tab" aria-selected="false">导入节点 <span>{{ import_nodes|length }}</span></button>
       </div>
       <div class="toolbar-create-actions">
         <a class="link-btn" href="/nodes/new">新建节点</a>
         <a class="link-btn" href="/nodes/new-chain">新建链式节点</a>
-        <a class="link-btn" href="/nodes/import">导入节点</a>
+        <a class="link-btn" href="/nodes/new-import">导入节点</a>
       </div>
     </div>
 
@@ -201,10 +203,10 @@
         <div class="panel-subtitle">外部 VLESS 链接导入，无需 VPS SSH 凭据。</div>
       </div>
       <div>
-        <a class="link-btn" href="/nodes/import">+ 批量导入</a>
+        <a class="link-btn" href="/nodes/import">批量导入</a>
       </div>
     </div>
-    {{ node_table(imported_nodes, '暂无导入节点。') }}
+    {{ node_table(import_nodes, '暂无导入节点。') }}
   </div>
 </section>
 
@@ -235,7 +237,7 @@
     document.querySelectorAll('[data-current-sub]').forEach((button) => {
       const kind = button.dataset.subKind || 'v2rayn';
       const nextUrl = subscriptionUrls?.[activeScope]?.[kind];
-      const label = activeScope === 'chain' ? '链式' : (activeScope === 'imported' ? '导入' : '直连');
+      const label = activeScope === 'chain' ? '链式' : (activeScope === 'imported' ? '导入节点' : '直连');
       button.dataset.subScope = activeScope;
       button.title = `复制${label} ${kind === 'clash' ? 'Clash' : 'v2rayN'} 订阅 URL`;
       button.setAttribute('aria-label', button.title);
@@ -244,51 +246,29 @@
     });
   }
 
-  function activateTab(target) {
-    activeScope = target === 'chain' ? 'chain' : (target === 'imported' ? 'imported' : 'direct');
+  function activateTab(target, updateHash = false) {
+    const normalizedTarget = target === 'chain' ? 'chain' : (target === 'imported' ? 'imported' : 'direct');
+    activeScope = normalizedTarget;
     tabs.forEach((item) => {
-      const active = item.dataset.tabTarget === target;
+      const active = item.dataset.tabTarget === normalizedTarget;
       item.classList.toggle('is-active', active);
       item.setAttribute('aria-selected', active ? 'true' : 'false');
     });
     panels.forEach((panel) => {
-      const active = panel.dataset.tabPanel === target;
+      const active = panel.dataset.tabPanel === normalizedTarget;
       panel.classList.toggle('is-active', active);
       panel.hidden = !active;
     });
-    updateCurrentSubscriptionButtons();
-    // Persist tab in URL hash and sessionStorage
-    if (window.location.hash !== '#' + target) {
-      history.replaceState(null, '', '#' + target);
+    if (updateHash) {
+      history.replaceState(null, '', `#${normalizedTarget}`);
     }
-    try { sessionStorage.setItem('natxyz-active-tab', target); } catch(e) {}
+    updateCurrentSubscriptionButtons();
   }
 
   tabs.forEach((tab) => {
-    tab.addEventListener('click', () => {
-      activateTab(tab.dataset.tabTarget);
-    });
+    tab.addEventListener('click', () => activateTab(tab.dataset.tabTarget, true));
   });
-
-  // Restore tab from URL hash on page load
-  (function restoreTab() {
-    const hash = window.location.hash.replace('#', '');
-    const validTargets = ['direct', 'chain', 'imported'];
-    if (validTargets.includes(hash)) {
-      activateTab(hash);
-      return;
-    }
-    // Check sessionStorage for last active tab
-    try {
-      const stored = sessionStorage.getItem('natxyz-active-tab');
-      if (validTargets.includes(stored)) {
-        activateTab(stored);
-        return;
-      }
-    } catch(e) {}
-    // Default: direct tab already active via HTML classes
-    updateCurrentSubscriptionButtons();
-  })();
+  activateTab(window.location.hash.replace('#', '') || 'direct');
 
   const rotateButton = document.getElementById('rotateSubscriptionToken');
   const rotateModal = document.getElementById('rotateTokenModal');

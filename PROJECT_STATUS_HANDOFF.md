@@ -121,6 +121,10 @@ git diff --stat
 
 5. `RCN US家宽` 曾显示部署失败，但用户确认原因是商家更换 IP 未通知，不是项目 bug。当前不需要继续修部署判定。
 
+6. 单节点重装已修复端口释放逻辑：部署脚本会先停止 systemd/OpenRC 的 `sing-box`，再清理本项目残留的 `/usr/local/bin/sing-box run -c /etc/sing-box/config.json` 进程；若监听端口被非本项目进程占用，会报错并输出占用者，避免误杀。
+
+7. `老站hinet` 部署失败原因已确认：目标是 Alpine/OpenRC/LXC，存在 `systemctl` 命令但并非 systemd，且 `/etc/systemd/system` 目录缺失；旧脚本会提前写 systemd unit 并误判 init 系统。已修为创建 `/etc/systemd/system`，并仅在 `/run/systemd/system` 存在时走 systemd 分支，否则走 OpenRC。修复后该节点 `40482/tcp` 已监听且外部 TCP 已通。
+
 ## 链式节点重要背景
 
 链式节点是：客户端连接前置机，前置机再转发到后端落地节点。

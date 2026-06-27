@@ -274,6 +274,18 @@ h1 {
   gap: 14px;
 }
 
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -291,7 +303,9 @@ label span {
   margin-bottom: 6px;
 }
 
-input {
+input,
+select,
+textarea {
   width: 100%;
   border: 1px solid var(--line);
   background: var(--panel-2);
@@ -299,6 +313,19 @@ input {
   border-radius: 10px;
   padding: 11px 13px;
   font: inherit;
+}
+
+textarea {
+  resize: vertical;
+  min-height: 118px;
+  line-height: 1.55;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+.readonly-field textarea,
+textarea[readonly] {
+  color: var(--muted);
+  background: rgba(255,255,255,.025);
 }
 
 .secret-input-row {
@@ -788,6 +815,7 @@ button[disabled], .ghost-btn[disabled], .icon-btn[disabled] {
 .code-box {
   white-space: pre-wrap;
   background: #0b1220;
+  color: #e5e7eb;
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 14px;
@@ -844,28 +872,6 @@ button[disabled], .ghost-btn[disabled], .icon-btn[disabled] {
   box-shadow: 0 0 0 1px rgba(255,255,255,.16), 0 4px 12px rgba(0,0,0,.18);
   vertical-align: middle;
 }
-.name-region-prefix {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  flex-shrink: 0;
-  margin-right: 2px;
-}
-.name-region-prefix .flag-icon {
-  width: 20px;
-  height: 13px;
-}
-.name-region-prefix .flag-arrow {
-  font-size: 10px;
-}
-.name-region-badge {
-  font-family: "JetBrains Mono", "Cascadia Code", monospace;
-  font-size: 11px;
-  font-weight: 700;
-  color: #8bf0c2;
-  letter-spacing: .04em;
-}
-
 .flag-arrow {
   color: #7f8ca8;
   font-size: 11px;
@@ -1220,4 +1226,99 @@ button[disabled], .ghost-btn[disabled], .icon-btn[disabled] {
   .small-btn {
     max-width: 100%;
   }
+}
+
+/* Light theme contrast fixes */
+:root[data-theme="light"] input,
+:root[data-theme="light"] select,
+:root[data-theme="light"] textarea {
+  color: #151a23;
+  background: #f4efe7;
+}
+
+:root[data-theme="light"] input::placeholder,
+:root[data-theme="light"] textarea::placeholder {
+  color: #6b7280;
+}
+
+:root[data-theme="light"] textarea[readonly],
+:root[data-theme="light"] .readonly-field textarea {
+  color: #374151;
+  background: rgba(255, 251, 245, .58);
+}
+
+:root[data-theme="light"] .danger-btn,
+:root[data-theme="light"] .error-box {
+  color: #8a1f31;
+  background: rgba(190, 51, 71, .13);
+  border-color: rgba(190, 51, 71, .34);
+}
+
+:root[data-theme="light"] .empty-box {
+  color: #4f5663;
+  background: rgba(148, 163, 184, .16);
+  border-color: rgba(100, 116, 139, .24);
+}
+
+:root[data-theme="light"] .tag-create-form,
+:root[data-theme="light"] .tag-picker form {
+  color: #151a23;
+  background: rgba(255, 251, 245, .98);
+  box-shadow: 0 18px 50px rgba(72, 58, 34, .16);
+}
+
+:root[data-theme="light"] .tag-create-form input[type="text"] {
+  color: #151a23;
+  background: #f4efe7;
+}
+
+:root[data-theme="light"] .tag-delete {
+  color: #8a1f31;
+  background: rgba(190, 51, 71, .13);
+}
+
+:root[data-theme="light"] .flag-badge {
+  color: #334155;
+  background: rgba(148, 163, 184, .18);
+  border-color: rgba(100, 116, 139, .28);
+}
+
+:root[data-theme="light"] .flag-arrow {
+  color: #64748b;
+}
+
+:root[data-theme="light"] .deploy-item {
+  background: rgba(255, 251, 245, .46);
+}
+
+/* Light theme node table contrast fixes */
+:root[data-theme="light"] .node-name-text,
+:root[data-theme="light"] .node-table td,
+:root[data-theme="light"] .node-table td span:not(.badge):not(.tag-chip):not(.flag-badge) {
+  color: #111827;
+}
+
+:root[data-theme="light"] .sort-arrow,
+:root[data-theme="light"] .name-save-trigger {
+  color: #047857;
+}
+
+:root[data-theme="light"] .name-edit-trigger,
+:root[data-theme="light"] .name-save-trigger {
+  color: #334155;
+  background: rgba(15, 23, 42, .06);
+  border-color: rgba(100, 116, 139, .22);
+}
+
+:root[data-theme="light"] .name-edit-trigger:hover,
+:root[data-theme="light"] .name-save-trigger:hover {
+  color: #0f172a;
+  background: rgba(37, 99, 235, .12);
+  border-color: rgba(37, 99, 235, .34);
+}
+
+:root[data-theme="light"] .node-kind-icon {
+  color: #123b78;
+  background: rgba(37, 99, 235, .14);
+  border-color: rgba(29, 78, 216, .32);
 }

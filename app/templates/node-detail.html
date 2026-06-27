@@ -12,6 +12,10 @@
     <div class="panel-subtitle">
       {% if is_chain %}
       链式节点 · 前置 {{ node['front_node_name'] or '-' }} → 后端 {{ node['backend_node_name'] or '-' }}
+      {% elif is_import %}
+      仅导入 · {{ node['ip'] or '-' }}{% if node['public_port'] %}:{{ node['public_port'] }}{% endif %}
+      {% elif is_tunnel %}
+      tunnel · {{ node['cf_host'] or '-' }}
       {% else %}
       {{ node['ip'] }} · {{ node['protocol_type'] }}
       {% endif %}
@@ -19,9 +23,11 @@
   </div>
   <div class="detail-actions">
     <button class="icon-btn" type="button" title="复制链接" aria-label="复制链接" onclick='copyText({{ display_vless_link | tojson }}, this)' {% if not display_vless_link %}disabled{% endif %}>⧉</button>
+    {% if not is_import %}
     <form method="post" action="/nodes/{{ node['node_id'] }}/reinstall" style="display:inline;">
       <button class="icon-btn" type="submit" title="{% if node['generated_uuid'] %}重新部署{% else %}开始部署{% endif %}" aria-label="{% if node['generated_uuid'] %}重新部署{% else %}开始部署{% endif %}">↻</button>
     </form>
+    {% endif %}
     <a class="icon-btn link-plain" href="/nodes/{{ node['node_id'] }}/edit" title="编辑" aria-label="编辑">✎</a>
     <a class="icon-btn link-plain" href="/nodes" title="返回列表" aria-label="返回列表">←</a>
     <span class="badge {{ badge_class }}">{{ badge_text }}</span>
@@ -37,34 +43,57 @@
       <div><dt>前置节点</dt><dd>{{ node['front_node_name'] or '未选择' }}</dd></div>
       <div><dt>后端节点</dt><dd>{{ node['backend_node_name'] or '未选择' }}</dd></div>
       <div><dt>入口</dt><dd>复用前置节点现有公网入口</dd></div>
+      {% elif is_import %}
+      <div><dt>类型</dt><dd>仅导入节点</dd></div>
+      <div><dt>节点名</dt><dd>{{ node['name'] }}</dd></div>
+      <div><dt>协议</dt><dd>{{ protocol_label }}</dd></div>
+      <div><dt>地址</dt><dd>{% if node['ip'] %}{{ node['ip'] }}{% if node['public_port'] %}:{{ node['public_port'] }}{% endif %}{% else %}从导入链接解析{% endif %}</dd></div>
       {% else %}
       <div><dt>节点名</dt><dd>{{ node['name'] }}</dd></div>
+      <div><dt>协议</dt><dd>{{ protocol_label }}</dd></div>
       <div><dt>NAT IP</dt><dd>{{ node['ip'] }}</dd></div>
       <div><dt>SSH</dt><dd>{{ node['ssh_user'] }}@{{ node['ip'] }}:{{ node['ssh_port'] }}</dd></div>
+      {% if is_tunnel %}
+      <div><dt>应用路由域名</dt><dd class="mono break-all">{{ node['cf_host'] or '暂无' }}</dd></div>
+      <div><dt>本地 WS 端口</dt><dd>{{ node['ws_port'] or 8080 }}</dd></div>
+      <div><dt>Tunnel token</dt><dd><button class="ghost-btn" type="button" onclick='copyText({{ (node["cf_tunnel_token"] or "") | tojson }}, this)' {% if not node['cf_tunnel_token'] %}disabled{% endif %}>复制 token</button> <span class="field-note">{% if node['cf_tunnel_token'] %}已配置，默认隐藏{% else %}未配置{% endif %}</span></dd></div>
+      {% else %}
       <div><dt>公网端口</dt><dd>{{ node['public_port'] }}</dd></div>
       <div><dt>监听端口</dt><dd>{{ node['listen_port'] }}</dd></div>
       {% endif %}
+      {% endif %}
+      {% if not is_import %}
       <div><dt>Agent Token</dt><dd class="mono break-all">{{ node['agent_token'] }}</dd></div>
       <div><dt>最后在线</dt><dd>{{ node['last_seen_at'] or '暂无' }}</dd></div>
+      {% endif %}
     </dl>
   </article>
 
+  {% if not is_import %}
   <article class="panel">
     <div class="panel-title">部署信息</div>
     <dl class="kv-list">
+      {% if is_tunnel %}
+      <div><dt>本地服务</dt><dd>sing-box + cloudflared</dd></div>
+      <div><dt>WS Path</dt><dd>{{ node['ws_path'] or '/' }}</dd></div>
+      <div><dt>UUID</dt><dd class="mono break-all">{{ node['generated_uuid'] or '暂无' }}</dd></div>
+      {% else %}
       <div><dt>Reality 目标</dt><dd>{{ node['selected_reality_target'] or '暂无' }}</dd></div>
       <div><dt>{% if is_chain %}链式 UUID{% else %}UUID{% endif %}</dt><dd class="mono break-all">{{ node['generated_uuid'] or '暂无' }}</dd></div>
       <div><dt>Public Key</dt><dd class="mono break-all">{{ node['generated_public_key'] or '暂无' }}</dd></div>
       <div><dt>Short ID</dt><dd class="mono break-all">{{ node['generated_short_id'] or '暂无' }}</dd></div>
+      {% endif %}
       <div><dt>导入链接</dt><dd class="mono break-all">{{ display_vless_link or '暂无成功部署链接' }}</dd></div>
       {% if display_vless_link %}
       <div><dt>查看参数</dt><dd><a class="ghost-btn link-plain" href="/deployments/{{ latest_deploy_id or '' }}">查看最近部署任务</a></dd></div>
       {% endif %}
     </dl>
   </article>
+  {% endif %}
 </section>
 
 <section class="grid-two">
+  {% if not is_import %}
   <article class="panel">
     <div class="panel-title">最近上报</div>
     {% if report %}
@@ -93,5 +122,11 @@
     <div class="empty-box">暂无部署记录</div>
     {% endif %}
   </article>
+  {% else %}
+  <article class="panel full-span">
+    <div class="panel-title">导入链接</div>
+    <div class="mono break-all">{{ display_vless_link or '暂无导入链接' }}</div>
+  </article>
+  {% endif %}
 </section>
 {% endblock %}

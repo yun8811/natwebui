@@ -1,269 +1,248 @@
-"""Region helpers — with IP geolocation for natxyz."""
 from __future__ import annotations
 
-import ipaddress
 import json
-import os
-import time
+import socket
 import urllib.parse
-from urllib.parse import urlparse, urlunparse, quote
+import urllib.request
+from typing import Any
 
-# Simple in-memory cache for geolocation results
-_CACHE_FILE = "/opt/natxyz/data/geo_cache.json"
-_cache: dict[str, dict] = {}
-
-
-def _load_cache():
-    global _cache
-    try:
-        if os.path.exists(_CACHE_FILE):
-            with open(_CACHE_FILE) as f:
-                _cache = json.load(f)
-    except Exception:
-        _cache = {}
-
-
-def _save_cache():
-    try:
-        os.makedirs(os.path.dirname(_CACHE_FILE), exist_ok=True)
-        with open(_CACHE_FILE, "w") as f:
-            json.dump(_cache, f)
-    except Exception:
-        pass
-
-
-_load_cache()
-
-
-def _geo_lookup(ip: str) -> dict | None:
-    """Look up country for IP using ipapi.co (free, no key, 1000 req/day)."""
-    if ip in _cache:
-        entry = _cache[ip]
-        # Cache for 7 days
-        if time.time() - entry.get("ts", 0) < 604800:
-            return entry.get("data")
-    try:
-        import urllib.request
-        req = urllib.request.Request(
-            f"https://ipapi.co/{ip}/json/",
-            headers={"User-Agent": "natxyz/1.0"}
-        )
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            data = json.loads(resp.read().decode())
-            if data.get("error"):
-                _cache[ip] = {"ts": time.time(), "data": None}
-                _save_cache()
-                return None
-            result = {
-                "code": (data.get("country_code") or "").upper(),
-                "label": data.get("country_name") or "",
-                "city": data.get("city") or "",
-            }
-            _cache[ip] = {"ts": time.time(), "data": result}
-            _save_cache()
-            return result
-    except Exception:
-        _cache[ip] = {"ts": time.time(), "data": None}
-        _save_cache()
-        return None
-
-
-def _is_private_ip(ip_str: str) -> bool:
-    try:
-        return ipaddress.ip_address(ip_str).is_private
-    except ValueError:
-        return False
-
-
-_COUNTRY_EMOJI: dict[str, str] = {
-    "HK": "🇭🇰", "JP": "🇯🇵", "KR": "🇰🇷", "US": "🇺🇸",
-    "TW": "🇹🇼", "SG": "🇸🇬", "TR": "🇹🇷", "AU": "🇦🇺",
-    "CN": "🇨🇳", "MY": "🇲🇾", "DE": "🇩🇪", "GB": "🇬🇧",
-    "FR": "🇫🇷", "NL": "🇳🇱", "CA": "🇨🇦", "BR": "🇧🇷",
-    "IN": "🇮🇳", "RU": "🇷🇺", "AE": "🇦🇪", "SA": "🇸🇦",
-    "TH": "🇹🇭", "VN": "🇻🇳", "PH": "🇵🇭", "ID": "🇮🇩",
-    "KH": "🇰🇭", "MM": "🇲🇲", "LA": "🇱🇦", "BD": "🇧🇩",
-    "PK": "🇵🇰", "IR": "🇮🇷", "IQ": "🇮🇶", "IL": "🇮🇱",
-    "EG": "🇪🇬", "ZA": "🇿🇦", "NG": "🇳🇬", "KE": "🇰🇪",
-    "AR": "🇦🇷", "CL": "🇨🇱", "MX": "🇲🇽", "PE": "🇵🇪",
-    "CO": "🇨🇴", "VE": "🇻🇪", "UA": "🇺🇦", "PL": "🇵🇱",
-    "IT": "🇮🇹", "ES": "🇪🇸", "PT": "🇵🇹", "SE": "🇸🇪",
-    "NO": "🇳🇴", "DK": "🇩🇰", "FI": "🇫🇮", "IS": "🇮🇸",
-    "EE": "🇪🇪", "LV": "🇱🇻", "LT": "🇱🇹", "CZ": "🇨🇿",
-    "SK": "🇸🇰", "HU": "🇭🇺", "RO": "🇷🇴", "BG": "🇧🇬",
-    "HR": "🇭🇷", "SI": "🇸🇮", "AT": "🇦🇹", "CH": "🇨🇭",
-    "BE": "🇧🇪", "LU": "🇱🇺", "IE": "🇮🇪", "GR": "🇬🇷",
-    "MT": "🇲🇹", "CY": "🇨🇾", "KZ": "🇰🇿", "UZ": "🇺🇿",
-    "AZ": "🇦🇿", "GE": "🇬🇪", "AM": "🇦🇲", "BY": "🇧🇾",
-    "MD": "🇲🇩", "AL": "🇦🇱", "MK": "🇲🇰", "RS": "🇷🇸",
-    "BA": "🇧🇦", "ME": "🇲🇪", "XK": "🇽🇰",
+COUNTRY_NAME_MAP = {
+    "HK": "香港",
+    "JP": "日本",
+    "KR": "韩国",
+    "US": "美国",
+    "TW": "台湾",
+    "SG": "新加坡",
+    "TR": "土耳其",
+    "AU": "澳洲",
+    "CN": "中国",
+    "MY": "马来西亚",
+    "DE": "德国",
+    "GB": "英国",
 }
 
-
-_COUNTRY_LABELS: dict[str, str] = {
-    "HK": "香港", "JP": "日本", "KR": "韩国", "US": "美国",
-    "TW": "台湾", "SG": "新加坡", "TR": "土耳其", "AU": "澳大利亚",
-    "CN": "中国", "MY": "马来西亚", "DE": "德国", "GB": "英国",
-    "FR": "法国", "NL": "荷兰", "CA": "加拿大", "BR": "巴西",
-    "IN": "印度", "RU": "俄罗斯", "AE": "阿联酋", "SA": "沙特",
-    "TH": "泰国", "VN": "越南", "PH": "菲律宾", "ID": "印尼",
-    "KH": "柬埔寨", "MM": "缅甸", "LA": "老挝", "BD": "孟加拉",
-    "PK": "巴基斯坦", "IR": "伊朗", "IQ": "伊拉克", "IL": "以色列",
-    "EG": "埃及", "ZA": "南非", "NG": "尼日利亚", "KE": "肯尼亚",
-    "AR": "阿根廷", "CL": "智利", "MX": "墨西哥", "PE": "秘鲁",
-    "CO": "哥伦比亚", "VE": "委内瑞拉", "UA": "乌克兰", "PL": "波兰",
-    "IT": "意大利", "ES": "西班牙", "PT": "葡萄牙", "SE": "瑞典",
-    "NO": "挪威", "DK": "丹麦", "FI": "芬兰", "IS": "冰岛",
-    "EE": "爱沙尼亚", "LV": "拉脱维亚", "LT": "立陶宛",
-    "CZ": "捷克", "SK": "斯洛伐克", "HU": "匈牙利", "RO": "罗马尼亚",
-    "BG": "保加利亚", "HR": "克罗地亚", "SI": "斯洛文尼亚",
-    "AT": "奥地利", "CH": "瑞士", "BE": "比利时", "LU": "卢森堡",
-    "IE": "爱尔兰", "GR": "希腊", "MT": "马耳他", "CY": "塞浦路斯",
-    "KZ": "哈萨克斯坦", "UZ": "乌兹别克斯坦", "AZ": "阿塞拜疆",
-    "GE": "格鲁吉亚", "AM": "亚美尼亚", "BY": "白俄罗斯",
-    "MD": "摩尔多瓦", "AL": "阿尔巴尼亚", "MK": "北马其顿",
-    "RS": "塞尔维亚", "BA": "波黑", "ME": "黑山", "XK": "科索沃",
+COUNTRY_NAME_TO_CODE = {
+    "香港": "HK",
+    "日本": "JP",
+    "韩国": "KR",
+    "美国": "US",
+    "台湾": "TW",
+    "新加坡": "SG",
+    "土耳其": "TR",
+    "澳洲": "AU",
+    "澳大利亚": "AU",
+    "中国": "CN",
+    "马来西亚": "MY",
+    "德国": "DE",
+    "英国": "GB",
+    "united states": "US",
+    "usa": "US",
+    "us": "US",
+    "japan": "JP",
+    "korea": "KR",
+    "south korea": "KR",
+    "hong kong": "HK",
+    "taiwan": "TW",
+    "singapore": "SG",
+    "turkey": "TR",
+    "australia": "AU",
+    "china": "CN",
+    "malaysia": "MY",
+    "germany": "DE",
+    "united kingdom": "GB",
+    "uk": "GB",
 }
 
-_HOST_COUNTRY_OVERRIDES: dict[str, str] = {
-    # Common VPS hostname patterns → country
-    "hinet": "TW",
-    "akile": "JP",
-    "iij": "JP",
-    "vultr": "US",
-    "digitalocean": "US",
-    "linode": "US",
-    "hetzner": "DE",
-    "ovh": "FR",
-    "scaleway": "FR",
-    "contabo": "DE",
-    "netcup": "DE",
-    "oracle": "US",
-    "aws": "US",
-    "azure": "US",
-    "gcp": "US",
-    "alibabacloud": "CN",
-    "tencent": "CN",
-    "huawei": "CN",
-    "buyvm": "US",
-    "racknerd": "US",
-    "colocrossing": "US",
-    "psychz": "US",
-    "dmit": "US",
-    "misaka": "JP",
-    "xtom": "JP",
-    "greencloud": "US",
-    "hosthatch": "US",
-    "liteserver": "NL",
-    "time4vps": "LT",
-    "servarica": "CA",
-    "privex": "US",
-}
+_IP_REGION_CACHE: dict[str, dict[str, Any]] = {}
 
 
-def _detect_country_from_host(host: str) -> str | None:
-    """Try to detect country from hostname patterns."""
-    host_lower = host.lower()
-    for keyword, code in _HOST_COUNTRY_OVERRIDES.items():
-        if keyword in host_lower:
-            return code
-    return None
-
-
-def _get(row, key, default=None):
-    """Safe get for both dict and sqlite3.Row."""
+def _node_value(node: dict | object | None, key: str) -> str:
+    if node is None:
+        return ""
     try:
-        return row.get(key, default)
-    except AttributeError:
-        try:
-            return row[key]
-        except (KeyError, IndexError):
-            return default
-
-
-def replace_vless_fragment(link: str, name: str) -> str:
-    """Replace the fragment of a vless:// URL with an encoded remark."""
-    if not link or not name:
-        return link
-    try:
-        parsed = urlparse(link)
-        fragment = quote(name, safe="")
-        replaced = parsed._replace(fragment=fragment)
-        return urlunparse(replaced)
+        value = node[key]  # type: ignore[index]
     except Exception:
-        return link
+        value = getattr(node, key, "")
+    return str(value or "").strip()
 
 
-def vless_remark_for_node(
-    node,
-    *args,
-    allow_lookup: bool = False,
-    region_source_node=None,
-) -> str:
-    """Generate a remark string for a vless link from node data."""
-    name = str(_get(node, "name") or _get(node, "node_id") or "")
-    region = region_from_node(node, allow_lookup=allow_lookup) if allow_lookup else {"label": ""}
-    code = _get(region, "code", "")
-    badge = _get(region, "badge", "")
-    if code and badge:
-        return f"{badge} {code} | {name}"
-    return name
-
-
-def lookup_region_by_host(host: str):
-    """Look up region info by hostname/IP with geolocation."""
+def normalize_host_value(value: str) -> str:
+    host = str(value or "").strip()
     if not host:
-        return {"code": "", "flag": "🌐", "badge": "IP", "flag_codes": [], "label": ""}
-
-    # Try hostname patterns first
-    country_code = _detect_country_from_host(host)
-    
-    # Fall back to IP geolocation for public IPs
-    if not country_code and not _is_private_ip(host):
-        geo = _geo_lookup(host)
-        if geo:
-            country_code = geo.get("code", "")
-
-    if country_code and country_code in _COUNTRY_EMOJI:
-        return {
-            "code": country_code,
-            "flag": _COUNTRY_EMOJI[country_code],
-            "badge": _COUNTRY_EMOJI[country_code],
-            "flag_codes": [country_code.lower()],
-            "label": _COUNTRY_LABELS.get(country_code, country_code),
-        }
-
-    return {"code": "", "flag": "🌐", "badge": "IP", "flag_codes": [], "label": ""}
+        return ""
+    if "://" in host:
+        parsed = urllib.parse.urlparse(host)
+        host = parsed.hostname or ""
+    else:
+        host = host.split("/", 1)[0].strip()
+        if host.count(":") == 1 and not host.startswith("["):
+            maybe_host, maybe_port = host.rsplit(":", 1)
+            if maybe_port.isdigit():
+                host = maybe_host
+        host = host.strip("[]")
+    return host.strip()
 
 
-def region_from_node(node=None, *, allow_lookup: bool = False):
-    """Return region info dict for a node."""
-    if not node:
-        return {"code": "", "flag": "🌐", "badge": "IP", "flag_codes": [], "label": ""}
+def resolve_host_for_region_lookup(host: str) -> str:
+    host = normalize_host_value(host)
+    if not host:
+        return ""
+    try:
+        socket.inet_pton(socket.AF_INET, host)
+        return host
+    except OSError:
+        pass
+    try:
+        socket.inet_pton(socket.AF_INET6, host)
+        return host
+    except OSError:
+        pass
+    try:
+        info = socket.getaddrinfo(host, None, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM)
+        for item in info:
+            addr = item[4][0]
+            if addr:
+                return addr
+    except Exception:
+        return host
+    return host
 
-    # Check manual override
-    manual_code = str(_get(node, "manual_country_code") or "").strip().upper()
-    manual_label = str(_get(node, "manual_region_label") or "").strip()
-    if manual_code and manual_code in _COUNTRY_EMOJI:
-        return {
-            "code": manual_code,
-            "flag": _COUNTRY_EMOJI[manual_code],
-            "badge": _COUNTRY_EMOJI[manual_code],
-            "flag_codes": [manual_code.lower()],
-            "label": manual_label or _COUNTRY_LABELS.get(manual_code, manual_code),
-        }
 
-    host = str(_get(node, "ip") or "").strip()
-    if host:
-        return lookup_region_by_host(host)
-    return {"code": "", "flag": "🌐", "badge": "IP", "flag_codes": [], "label": ""}
+def country_text_to_code(text: str) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    upper = raw.upper()
+    if len(upper) == 2 and upper.isalpha():
+        return upper
+    return COUNTRY_NAME_TO_CODE.get(raw) or COUNTRY_NAME_TO_CODE.get(raw.lower(), "")
 
 
-def country_code_to_badge(country_code: str) -> str:
-    """Map country code to emoji flag."""
-    return _COUNTRY_EMOJI.get(country_code.upper(), "🌐")
+def infer_country_code_from_node_name(name: str) -> str:
+    text = str(name or "").strip().lower()
+    if not text:
+        return ""
+    for key, code in COUNTRY_NAME_TO_CODE.items():
+        if key and key.lower() in text:
+            return code
+    return ""
 
 
 def country_code_to_flag(country_code: str) -> str:
-    """Map country code to emoji flag."""
-    return country_code_to_badge(country_code)
+    code = str(country_code or "").strip().upper()
+    if len(code) != 2 or not code.isalpha():
+        return ""
+    return "".join(chr(ord(char) - ord("A") + 0x1F1E6) for char in code)
+
+
+def country_code_to_badge(country_code: str) -> str:
+    code = str(country_code or "").strip().upper()
+    if len(code) != 2 or not code.isalpha():
+        return ""
+    return code
+
+
+def lookup_region_by_host(host: str, timeout: float = 1.6) -> dict[str, Any]:
+    ip = resolve_host_for_region_lookup(host)
+    if not ip:
+        return {"code": "", "flag": "", "badge": "", "flag_codes": [], "label": ""}
+    if ip in _IP_REGION_CACHE:
+        return dict(_IP_REGION_CACHE[ip])
+    result: dict[str, Any]
+    try:
+        url = f"http://ip-api.com/json/{urllib.parse.quote(ip)}?fields=status,countryCode,country,regionName"
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8", "ignore"))
+        if data.get("status") == "success" and data.get("countryCode"):
+            code = str(data.get("countryCode") or "").strip().upper()
+            region = str(data.get("regionName") or "").strip()
+            country = COUNTRY_NAME_MAP.get(code, str(data.get("country") or code))
+            result = {
+                "code": code,
+                "flag": country_code_to_flag(code),
+                "badge": country_code_to_badge(code),
+                "flag_codes": [code.lower()],
+                "label": f"{country} {region}".strip(),
+            }
+        else:
+            result = {"code": "", "flag": "🌐", "badge": "IP", "flag_codes": [], "label": ip}
+    except Exception:
+        result = {"code": "", "flag": "🌐", "badge": "IP", "flag_codes": [], "label": ip}
+    _IP_REGION_CACHE[ip] = result
+    return dict(result)
+
+
+def lookup_country_code_by_host(host: str, timeout: float = 1.6) -> str:
+    return str(lookup_region_by_host(host, timeout=timeout).get("code") or "").strip().upper()
+
+
+def node_country_code(node: dict | object | None, *, allow_lookup: bool = False, allow_name_infer: bool = True) -> str:
+    manual_code = country_text_to_code(_node_value(node, "manual_country_code"))
+    if manual_code:
+        return manual_code
+    manual_label = country_text_to_code(_node_value(node, "manual_region_label"))
+    if manual_label:
+        return manual_label
+    auto_code = country_text_to_code(_node_value(node, "country_code"))
+    if auto_code:
+        return auto_code
+    auto_label = country_text_to_code(_node_value(node, "country") or _node_value(node, "region_label"))
+    if auto_label:
+        return auto_label
+    if allow_name_infer:
+        inferred = infer_country_code_from_node_name(_node_value(node, "name"))
+        if inferred:
+            return inferred
+    if allow_lookup:
+        looked_up = lookup_country_code_by_host(_node_value(node, "ip"))
+        if looked_up:
+            return looked_up
+    return ""
+
+
+def node_flag_emoji(node: dict | object | None, *, allow_lookup: bool = False, allow_name_infer: bool = True) -> str:
+    return country_code_to_flag(node_country_code(node, allow_lookup=allow_lookup, allow_name_infer=allow_name_infer))
+
+
+def region_from_node(node: dict | object | None, *, allow_lookup: bool = True, allow_name_infer: bool = True) -> dict[str, Any]:
+    code = node_country_code(node, allow_lookup=False, allow_name_infer=allow_name_infer)
+    manual_label = _node_value(node, "manual_region_label")
+    if code:
+        return {
+            "code": code,
+            "flag": country_code_to_flag(code),
+            "badge": country_code_to_badge(code),
+            "flag_codes": [code.lower()],
+            "label": manual_label or COUNTRY_NAME_MAP.get(code, code),
+        }
+    if manual_label:
+        return {"code": "", "flag": "📍", "badge": "", "flag_codes": [], "label": manual_label}
+    if allow_lookup:
+        return lookup_region_by_host(_node_value(node, "ip"))
+    return {"code": "", "flag": "", "badge": "", "flag_codes": [], "label": ""}
+
+
+def chain_display_region(front_node: dict | object | None, backend_node: dict | object | None) -> dict[str, Any]:
+    # 列表展示链式节点时，只显示落地端（backend）的国家/地区，避免入口国旗误导实际出口。
+    backend_region = region_from_node(backend_node, allow_lookup=True)
+    if backend_region.get("code") or backend_region.get("label"):
+        return {**backend_region, "label": f"落地端：{backend_region.get('label') or backend_region.get('code')}"}
+    return {"code": "", "flag": "🌐", "badge": "IP", "flag_codes": [], "label": "落地端未知"}
+
+
+def vless_remark_for_node(node: dict | object | None, fallback_name: str = "", *, allow_lookup: bool = False, allow_name_infer: bool = True, region_source_node: dict | object | None = None) -> str:
+    name = _node_value(node, "name") or str(fallback_name or "").strip()
+    source = region_source_node if region_source_node is not None else node
+    flag = node_flag_emoji(source, allow_lookup=allow_lookup, allow_name_infer=allow_name_infer)
+    if flag and name:
+        return f"{flag} {name}"
+    return name
+
+
+def replace_vless_fragment(link: str, remark: str) -> str:
+    raw = str(link or "").strip()
+    if not raw.startswith("vless://") or not remark:
+        return raw
+    parsed = urllib.parse.urlsplit(raw)
+    encoded_remark = urllib.parse.quote(remark, safe="")
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, parsed.query, encoded_remark))
