@@ -282,7 +282,7 @@ def test_create_node_accepts_ddns_domain_as_ip_field_and_preserves_link_host() -
         "/nodes/new",
         data={
             "name": "DDNS_DOMAIN_NODE",
-            "ip": "https://HINET.Example.COM/",
+            "ip": "https://Node.Example.COM/",
             "ssh_port": "2222",
             "ssh_user": "root",
             "ssh_password": "ddns-pass",
@@ -372,7 +372,7 @@ def test_deployer_defaults_reality_target_when_blank() -> None:
 
 def test_vless_link_remark_uses_manual_country_flag() -> None:
     node = {
-        "name": "hinet-lazy",
+        "name": "demo-node",
         "ip": "node.example.com",
         "public_port": 20282,
         "manual_country_code": "TW",
@@ -386,7 +386,7 @@ def test_vless_link_remark_uses_manual_country_flag() -> None:
         generated_short_id="abcd",
         selected_reality_target="www.example.com",
     )
-    assert urllib.parse.unquote(urllib.parse.urlparse(link).fragment) == "🇹🇼 hinet-lazy"
+    assert urllib.parse.unquote(urllib.parse.urlparse(link).fragment) == "🇹🇼 demo-node"
 
 
 def test_replace_vless_fragment_keeps_flag_when_node_name_changes() -> None:
