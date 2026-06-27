@@ -57,6 +57,62 @@ nohup scripts/run-prod.sh > logs/uvicorn.out 2> logs/uvicorn.err & echo $! > dat
 tr '\0' '\n' < /proc/$(cat data/uvicorn.pid)/environ | grep '^NAT_WEBUI_' | sed -E 's/(NAT_WEBUI_ADMIN_PASSWORD=).*/\1[hidden]/; s/(NAT_WEBUI_SESSION_SECRET=).*/\1[hidden]/'
 ```
 
+
+## GitHub 上传脱敏清单
+
+本仓库已按开源上传要求移除运行数据和真实节点信息。后续提交前也应按本清单复查。
+
+### 未上传的运行数据
+
+以下内容只允许存在于服务器本地，不进入 GitHub：
+
+- `data/*.db`：SQLite 数据库，包含节点、订阅 token、部署记录、标签、在线状态等运行数据。
+- `data/geo_cache.json`：IP/地区缓存，可能包含真实节点 IP。
+- `logs/*.log`：运行日志，可能包含请求、部署错误、节点地址或敏感上下文。
+- `.env`、`.env.*`、`.env.runtime`：生产环境变量，包含管理员密码、session secret、数据库路径等。
+- `.venv/`、`.test-venv*/`：本地/测试虚拟环境，不属于源码。
+
+仓库中仅保留 `data/.gitkeep` 和 `logs/.gitkeep` 作为空目录占位。
+
+### 已替换的真实信息
+
+- 真实服务器 IP / 节点 IP：替换为文档保留地址，例如 `198.51.100.x`、`203.0.113.x`。
+- 真实域名 / DDNS / 业务域名：替换为 `example.com`、`node.example.com`、`backend.example.com`、`www.example.com` 等示例域名。
+- 真实 root 密码 / SSH 密码：不写入源码；测试里只使用 `test-pass`、`new-pass`、`dup-pass`、`custom-pass` 等无效占位值。
+- 真实 root 登录命令：文档或提示中使用 `<user>`、占位地址或泛化说明，避免保留真实 `root@真实IP`。
+- 真实 VLESS / VMess / Trojan / SS 节点链接：不提交；测试中仅保留无效 UUID、保留地址、`example.com` 组成的假链接。
+- 真实 API Key / Token / 私钥 / Session Secret：不提交；数据库展示逻辑会把敏感字段显示为 `[REDACTED_*]`。
+- Agent 上报公网地址：源码不再写死真实域名，改为从 `NAT_WEBUI_PUBLIC_BASE_URL` 读取。
+- 表单示例域名：使用 `node.example.com` 等占位示例。
+
+### 按文件列出的脱敏位置
+
+- `.gitignore`：忽略 `.env`、`.env.*`、`data/*.db`、`logs/*.log`、`.venv/`、`.test-venv*/`，避免环境变量、数据库、日志、测试环境进入仓库。
+- `app/config.py`：只读取 `NAT_WEBUI_*` 环境变量，不保存生产密码；新增 `NAT_WEBUI_PUBLIC_BASE_URL` 作为 Agent 公网地址来源。
+- `app/deployer.py`：部署生成脚本不再写死真实上报域名，改用 `PUBLIC_BASE_URL + AGENT_REPORT_PATH`；生成的 UUID、Reality key、short id 只写入运行数据库，不写入源码。
+- `app/db.py`：展示/导出部署信息时对 `password`、`token`、`secret`、`private_key`、`vless://` 等字段做 `[REDACTED_*]` 处理。
+- `app/templates/node-form.html`：节点 IP/域名输入框 placeholder 改为 `node.example.com`，不保留真实节点域名。
+- `app/templates/nodes.html`、`app/templates/node-detail.html`：页面只展示数据库运行时内容；源码模板不内置真实节点、订阅 token 或 VLESS 链接。
+- `scripts/run-prod.sh`：只加载本地 `.env.runtime`，脚本本身不写生产密码、真实 IP、真实域名或节点链接。
+- `tests/test_app.py`：测试 IP 使用 `198.51.100.x`、`203.0.113.x` 文档保留地址；测试域名使用 `example.com`；测试密码是假值；测试 VLESS 链接是假 UUID + 保留地址。
+- `README.md`：运行示例中的密码通过 `[hidden]` 展示；真实节点信息只用占位说明。
+- `PROJECT_STATUS_HANDOFF.md`、`PHASE2.md`：作为文档一并扫描，要求不写真实节点 IP、真实域名、root 密码、token 或订阅链接。
+- `data/`、`logs/`：仓库只保留 `.gitkeep`，真实数据库、缓存和日志都留在服务器本地。
+
+### 上传前复查范围
+
+上传 GitHub 前至少复查这些位置：
+
+- `app/`：后端源码、部署脚本生成逻辑、配置读取、模板传参。
+- `app/templates/`：页面 placeholder、错误提示、详情页展示内容。
+- `scripts/`：启动脚本、辅助脚本，尤其避免写死 IP、域名、密码、token。
+- `tests/`：测试数据只能使用保留 IP、示例域名、假 UUID、假密码。
+- `README.md`、`PROJECT_STATUS_HANDOFF.md`、`PHASE2.md`：文档不得包含真实节点、域名、密码或订阅链接。
+
+### 当前上传前扫描结论
+
+最近一次上传前已做阻断级扫描：真实 IP、真实域名、root/sshpass、密码、token、API key、私钥、完整节点链接均未发现阻断项，结果为 `BLOCKING_FINDINGS 0`。
+
 ## 环境变量
 
 运行期环境变量来自 `.env.runtime`，不要提交。
