@@ -12,7 +12,7 @@ os.environ.setdefault("NAT_WEBUI_DB_PATH", f"/tmp/nat_webui_test_{uuid.uuid4().h
 
 from app import jobs, main
 from app.chain_deployer import build_front_chain_config
-from app.deployer import build_remote_script, build_singbox_config, build_vless_link, choose_reality_target, generate_reality_materials, resolve_host_for_ssh
+from app.deployer import DeployedNodeResult, DeployResult, build_remote_script, build_singbox_config, build_vless_link, choose_reality_target, generate_reality_materials, resolve_host_for_ssh
 from app.db import create_deployment_record, create_node_record, get_deployment, get_node, init_db, list_chain_backend_nodes, list_direct_vless_nodes, list_nodes, mark_deployment_failed, set_node_generated_fields
 from app.main import app, build_subscription_payload, display_vless_link_for_node
 from app.link_labels import replace_vless_fragment, vless_remark_for_node
@@ -211,17 +211,31 @@ def test_create_reinstall_and_delete_node_flow(monkeypatch) -> None:
     assert "44322" in edited_detail.text
     assert "2444" in edited_detail.text
 
-    class FakeDeployResult:
-        summary_log = "真实部署已完成"
-        raw_log = "[stage] ssh_probe\nCONNECTED\n[stage] deploy\nOK: deploy finished"
-        generated_vless_link = "vless://fake-uuid@198.51.100.20:44322?security=reality#NAT_TEST_EDITED"
-        generated_uuid = "fake-uuid"
-        generated_private_key = "fake-private"
-        generated_public_key = "fake-public"
-        generated_short_id = "fake-short-id"
-        selected_reality_target = "www.example.com"
+    def fake_deploy_result(nodes):
+        node = nodes[0] if isinstance(nodes, list) else nodes
+        node_result = DeployedNodeResult(
+            node_id=node["node_id"],
+            generated_vless_link="vless://fake-uuid@198.51.100.20:44322?security=reality#NAT_TEST_EDITED",
+            generated_uuid="fake-uuid",
+            generated_private_key="fake-private",
+            generated_public_key="fake-public",
+            generated_short_id="fake-short-id",
+            selected_reality_target="www.example.com",
+        )
+        return DeployResult(
+            summary_log="真实部署已完成",
+            raw_log="[stage] ssh_probe\nCONNECTED\n[stage] deploy\nOK: deploy finished",
+            generated_vless_link=node_result.generated_vless_link,
+            generated_uuid=node_result.generated_uuid,
+            generated_private_key=node_result.generated_private_key,
+            generated_public_key=node_result.generated_public_key,
+            generated_short_id=node_result.generated_short_id,
+            selected_reality_target=node_result.selected_reality_target,
+            node_results=[node_result],
+        )
 
-    monkeypatch.setattr(jobs, "run_real_deploy", lambda node: FakeDeployResult())
+    monkeypatch.setattr(jobs, "run_real_deploy", fake_deploy_result)
+    monkeypatch.setattr(jobs, "run_multi_real_deploy", fake_deploy_result)
 
     submitted: list[tuple[str, dict]] = []
 
@@ -299,12 +313,12 @@ def test_create_node_normalizes_custom_reality_target() -> None:
         "/nodes/new",
         data={
             "name": "CUSTOM_REALITY_NODE",
-            "ip": "198.51.100.88",
-            "ssh_port": "2388",
+            "ip": "198.51.100.93",
+            "ssh_port": "2393",
             "ssh_user": "root",
             "ssh_password": "custom-pass",
             "public_port": "44388",
-            "listen_port": "443",
+            "listen_port": "44388",
             "protocol_type": "vless_reality_singbox",
             "selected_reality_target": "https://WWW.EXAMPLE.COM/",
         },
@@ -457,7 +471,7 @@ def test_resolve_host_for_ssh_resolves_domain_but_keeps_ip_literal(monkeypatch) 
 
 
 
-def test_create_node_rejects_duplicate_ip_and_ssh_port() -> None:
+def test_create_node_allows_same_ssh_endpoint_but_rejects_port_conflict() -> None:
     login()
     first = client.post(
         "/nodes/new",
@@ -474,20 +488,35 @@ def test_create_node_rejects_duplicate_ip_and_ssh_port() -> None:
     )
     assert first.status_code == 303
 
+    allowed = client.post(
+        "/nodes/new",
+        data={
+            "name": "NAT_DUP_SECOND_ALLOWED",
+            "ip": "203.0.113.10",
+            "ssh_port": "22",
+            "ssh_user": "root",
+            "ssh_password": "dup-pass",
+            "public_port": "44444",
+            "listen_port": "44444",
+        },
+        follow_redirects=False,
+    )
+    assert allowed.status_code == 303
+
     response = client.post(
         "/nodes/new",
         data={
-            "name": "NAT_DUP_SECOND",
+            "name": "NAT_DUP_PORT_CONFLICT",
             "ip": "203.0.113.10",
             "ssh_port": "22",
             "ssh_user": "root",
             "ssh_password": "dup-pass",
             "public_port": "44443",
-            "listen_port": "44443",
+            "listen_port": "44445",
         },
     )
     assert response.status_code == 200
-    assert "已存在相同 IP + SSH 端口 的节点记录" in response.text
+    assert "已存在相同 IP + 公网端口或监听端口 的节点记录" in response.text
 
 
 def test_create_chain_node_record_preserves_front_and_backend_references() -> None:

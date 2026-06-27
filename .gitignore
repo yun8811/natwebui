@@ -5,6 +5,7 @@ __pycache__/
 
 # Virtualenv
 .venv/
+.test-venv*/
 
 # Runtime data
 data/*.db
