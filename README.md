@@ -2,15 +2,15 @@
 
 轻量 NAT / 家宽 / 代理节点管理面板。目标是把用户常用的 NAT 小鸡、家宽落地机、前置中转机统一记录、部署、订阅分发，并支持“前置入口 -> 后端落地”的链式节点。
 
-当前实际运行目录：`/root/.nanobot/workspace/nat-webui-project`
+当前实际运行目录：按部署环境决定；生产环境建议使用 `/opt/natxyz` 或独立工作目录。
 
-GitHub 仓库：`wk8326-ux/natxyz`
+GitHub 仓库：`yun8811/natwebui`
 
 运行端口：`8788`
 
 生产启动脚本：`scripts/run-prod.sh`
 
-重要原则：改功能时先改当前运行目录并验证，再提交 push 到 GitHub。不要只改 `/root/local/projects/github/natxyz` 后忘记同步运行目录。
+重要原则：改功能时先确认实际运行目录，在干净工作区验证并完成脱敏扫描后再提交 push 到 GitHub。
 
 ## 当前核心能力
 
@@ -20,7 +20,7 @@ GitHub 仓库：`wk8326-ux/natxyz`
 - 节点名内联编辑
 - 节点表格前端排序
 - 地区代码 / 国旗 / 订阅备注生成
-- 单节点 VLESS Reality 部署 / 重装
+- 直连 VLESS Reality 部署 / 重装，支持同一 VPS 多直连节点合并为多个 inbound
 - Alpine / Debian 基础依赖补装
 - DDNS / 域名型 NAT 节点部署
 - Agent 上报与在线状态回填
@@ -36,14 +36,14 @@ GitHub 仓库：`wk8326-ux/natxyz`
 本机生产运行应使用：
 
 ```bash
-cd /root/.nanobot/workspace/nat-webui-project
+cd /opt/natxyz
 nohup scripts/run-prod.sh > logs/uvicorn.out 2> logs/uvicorn.err & echo $! > data/uvicorn.pid
 ```
 
 停止 / 重启：
 
 ```bash
-cd /root/.nanobot/workspace/nat-webui-project
+cd /opt/natxyz
 kill -TERM $(cat data/uvicorn.pid) 2>/dev/null || true
 sleep 1
 nohup scripts/run-prod.sh > logs/uvicorn.out 2> logs/uvicorn.err & echo $! > data/uvicorn.pid
@@ -141,9 +141,9 @@ tr '\0' '\n' < /proc/$(cat data/uvicorn.pid)/environ | grep '^NAT_WEBUI_' | sed 
   - 常改位置：节点字段、节点列表过滤、状态机、订阅筛选
 
 - `app/deployer.py`
-  - 单节点部署逻辑
-  - 负责 SSH 到目标机、写远端配置、启动 sing-box、回填 VLESS 链接
-  - 常改位置：Debian/Alpine 兼容、部署命令、回填字段、部署失败状态
+  - 直连节点部署逻辑
+  - 负责 SSH 到目标机、合并同一 SSH 端点下的多个 inbound、写远端配置、启动 sing-box、回填各节点 VLESS 链接
+  - 常改位置：Debian/Alpine 兼容、多 inbound 生成、Agent 上报脚本、回填字段、部署失败状态
 
 - `app/chain_deployer.py`
   - 链式节点部署逻辑
@@ -328,13 +328,14 @@ Clash：
 - route rule 用 `user` 字段
 - 不能把用户流量路由写成旧字段 `auth_user`
 
-### 改单节点部署
+### 改直连节点部署
 
 优先看：
 
 - `app/deployer.py`
 - `app/jobs.py`
 - `app/main.py` 的 `/nodes/{node_id}/reinstall`
+- 同一 `IP + SSH端口` 可存在多个直连节点，但 `公网端口` / `监听端口` 不能冲突
 - `app/db.py` 的部署记录与状态更新函数
 
 重装前必须释放目标监听端口：
@@ -365,18 +366,18 @@ Clash：
 每次功能改完至少跑：
 
 ```bash
-cd /root/.nanobot/workspace/nat-webui-project
+cd /opt/natxyz
 python -m py_compile app/main.py app/db.py app/deployer.py app/chain_deployer.py
 . .venv/bin/activate
 PYTHONPATH=. pytest -q tests/test_app.py
 ```
 
-当前基线：`27 passed`。
+当前基线：`32 passed`。
 
 页面验证建议：
 
 ```bash
-cd /root/.nanobot/workspace/nat-webui-project
+cd /opt/natxyz
 . .venv/bin/activate
 python - <<'PY'
 from fastapi.testclient import TestClient
@@ -396,14 +397,14 @@ PY
 当前工作流：
 
 ```bash
-cd /root/.nanobot/workspace/nat-webui-project
+cd /opt/natxyz
 git status --short
 git diff --stat
 python -m py_compile app/main.py app/db.py app/deployer.py app/chain_deployer.py
 . .venv/bin/activate && PYTHONPATH=. pytest -q tests/test_app.py
 git add <changed files>
 git commit -m "..."
-git push origin master
+git push origin main
 ```
 
 不要提交：
@@ -421,19 +422,18 @@ git push origin master
 
 最近已完成并 push：
 
-- Commit：`6ac0c0d feat: add imported node chain backend support`
-- 仅导入节点 UI / 订阅 / 详情页优化
-- 仅导入节点只能做链式后端，不能做前置
-- 链式部署支持解析导入 VLESS Reality 链接生成 sing-box outbound
-- 路由规则改为正确的 `user` 字段
-- 测试：`27 passed`
+- 直连节点支持同一 VPS 多节点合并为多个 inbound
+- 导入节点与批量导入入口已拆分，`/nodes#imported` 等页签返回已修复
+- Agent 上报地址改为通过 `NAT_WEBUI_PUBLIC_BASE_URL` 配置，不在源码写死公网域名
+- GitHub 上传前已补充脱敏清单并清理残留真实/疑似真实节点标记
+- 测试：`32 passed`
 
 ## 下次接手最短路径
 
 1. 进入运行目录：
 
 ```bash
-cd /root/.nanobot/workspace/nat-webui-project
+cd /opt/natxyz
 ```
 
 2. 看项目说明：

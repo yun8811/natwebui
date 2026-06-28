@@ -1,6 +1,6 @@
 # NAT WebUI 项目交接简报
 
-更新时间：2026-06-02
+更新时间：2026-06-28
 
 ## 项目定位
 
@@ -10,25 +10,25 @@
 
 ## 当前运行状态
 
-- 本地正在运行的服务目录：`/root/.nanobot/workspace/nat-webui-project`
+- 当前运行目录：按部署环境决定；生产环境建议使用 `/opt/natxyz` 或独立工作目录
 - 当前运行端口：`8788`
-- 启动方式：`uvicorn app.main:app --host 0.0.0.0 --port 8788`
+- 启动方式：`scripts/run-prod.sh` 或 systemd/进程管理器调用同等命令
 - 运行期环境变量文件：`.env.runtime`
 - 数据库：`data/nat-webui.db`
 - 当前进程 PID 文件：`data/uvicorn.pid`
 - 日志文件：`logs/uvicorn.out`、`logs/uvicorn.err`
 
-注意：GitHub 仓库目录是 `/root/local/projects/github/natxyz`，但用户当前看到的实际页面来自 `/root/.nanobot/workspace/nat-webui-project`。后续改功能时要确认同步到实际运行目录并重启服务。
+注意：不要直接提交生产运行目录；上传 GitHub 前应使用干净工作区并按 README 的脱敏清单复查。
 
 ## GitHub / 本地代码状态
 
-- GitHub 仓库：`wk8326-ux/natxyz`
-- GitHub main 已推送的最近功能提交：`97ee0f0 feat: split node tabs and subscription feeds`
-- 运行目录当前还有本地修改，包含最近前端 tabs / 订阅拆分同步，以及部署相关未整理改动。
+- GitHub 仓库：`yun8811/natwebui`
+- GitHub main 已推送最近变更，继续开发前以 `git status --short` 和远端 `main` 为准
+- 当前源码已整理并推送；运行目录若有本地数据、日志或 `.env.runtime`，不得上传。
 - 如果后续继续开发，先执行：
 
 ```bash
-cd /root/.nanobot/workspace/nat-webui-project
+cd /opt/natxyz
 git status --short
 git diff --stat
 ```
@@ -55,7 +55,7 @@ git diff --stat
 
 - `app/templates/`
   - Jinja2 页面模板
-  - `nodes.html` 是节点列表页，已拆分为“直连 / 链式”标签页
+  - `nodes.html` 是节点列表页，已拆分为“直连 / 链式 / 仅导入”标签页
 
 - `app/static/`
   - CSS、图标、国旗等静态资源
@@ -63,7 +63,7 @@ git diff --stat
 
 - `tests/`
   - pytest 测试
-  - 当前运行目录测试已通过：`24 passed`
+  - 当前测试已通过：`32 passed`
 
 - `data/`
   - 运行期数据库、PID 等，不应提交
@@ -76,7 +76,7 @@ git diff --stat
 - 管理员登录
 - 节点新增、编辑、删除
 - 节点详情页
-- 单节点部署 / 重装
+- 直连节点部署 / 重装，支持同一 VPS 多直连节点合并为多个 inbound
 - 节点名内联编辑
 - 节点标签管理
 - 节点表格前端排序
@@ -85,11 +85,12 @@ git diff --stat
 - v2rayN / Clash 订阅生成
 - 链式节点展示
 - 链式节点新建
-- 直连 / 链式节点分标签页展示
+- 直连 / 链式 / 仅导入节点分标签页展示
 - 订阅拆分为：
   - 全部订阅
   - 直连订阅
   - 链式订阅
+  - 仅导入订阅
 
 ## 订阅接口状态
 
@@ -101,8 +102,10 @@ git diff --stat
 - 全部 Clash：`/sub/{token}/clash`
 - 直连 Clash：`/sub/{token}/clash?scope=direct`
 - 链式 Clash：`/sub/{token}/clash?scope=chain`
+- 仅导入 v2rayN：`/sub/{token}?scope=import`
+- 仅导入 Clash：`/sub/{token}/clash?scope=import`
 
-页面按钮保持简洁：每组只放 v2rayN 图标按钮和 Clash 图标按钮。
+页面按钮按 `直连 / 链式 / 仅导入` 分组展示 v2rayN 和 Clash 入口。
 
 ## 最近关键进展
 
@@ -119,11 +122,11 @@ git diff --stat
 
 4. 用户已确认新前端可见。
 
-5. `RCN US家宽` 曾显示部署失败，但用户确认原因是商家更换 IP 未通知，不是项目 bug。当前不需要继续修部署判定。
+5. 直连部署已支持同一 VPS 多节点：同一 `IP + SSH端口` 下的多个直连节点会合并进同一个 sing-box 配置的多个 inbound。
 
-6. 单节点重装已修复端口释放逻辑：部署脚本会先停止 systemd/OpenRC 的 `sing-box`，再清理本项目残留的 `/usr/local/bin/sing-box run -c /etc/sing-box/config.json` 进程；若监听端口被非本项目进程占用，会报错并输出占用者，避免误杀。
+6. 直连重装已修复端口释放逻辑：部署脚本会先停止 systemd/OpenRC 管理的 `sing-box`，再清理本项目残留的 `/usr/local/bin/sing-box run -c /etc/sing-box/config.json` 进程；若监听端口被非本项目进程占用，会报错并输出占用者，避免误杀。
 
-7. `示例旧节点` 部署失败原因已确认：目标是 Alpine/OpenRC/LXC，存在 `systemctl` 命令但并非 systemd，且 `/etc/systemd/system` 目录缺失；旧脚本会提前写 systemd unit 并误判 init 系统。已修为创建 `/etc/systemd/system`，并仅在 `/run/systemd/system` 存在时走 systemd 分支，否则走 OpenRC。端口监听与外部连通性已验证通过。
+7. Alpine/OpenRC/LXC 兼容已修复：仅在 `/run/systemd/system` 存在时走 systemd 分支，否则走 OpenRC。
 
 ## 链式节点重要背景
 
@@ -147,18 +150,17 @@ git diff --stat
 - 改完后要：
 
 ```bash
-cd /root/.nanobot/workspace/nat-webui-project
+cd /opt/natxyz
 . .venv/bin/activate
-PYTHONPATH=. pytest -q
+python -m pytest -q tests/test_app.py
 ```
 
 - 重启本地服务后再验证页面：
 
 ```bash
-cd /root/.nanobot/workspace/nat-webui-project
+cd /opt/natxyz
 kill -TERM $(cat data/uvicorn.pid) 2>/dev/null || true
-set -a; . ./.env.runtime; set +a
-nohup .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8788 > logs/uvicorn.out 2> logs/uvicorn.err & echo $! > data/uvicorn.pid
+nohup scripts/run-prod.sh > logs/uvicorn.out 2> logs/uvicorn.err & echo $! > data/uvicorn.pid
 ```
 
 - 涉及 CSS / 前端静态资源时，记得更新 `app/templates/base.html` 里的 `style.css?v=...`，避免用户看到旧缓存。
@@ -169,7 +171,7 @@ nohup .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8788 > logs/uvicorn.o
 
 如果后续新开对话，优先从这里继续：
 
-1. 进入实际运行目录：`/root/.nanobot/workspace/nat-webui-project`
+1. 进入实际运行目录：`/opt/natxyz`，或进入当前部署实际使用的项目目录
 2. 查看当前本地改动：`git status --short && git diff --stat`
-3. 确认页面/订阅是否正常：检查 `/nodes` 是否有“直连节点 / 链式节点”，订阅链接是否带 `scope=direct` 和 `scope=chain`
-4. 若继续开发，再决定是否把运行目录改动整理同步到 GitHub 仓库 `/root/local/projects/github/natxyz`
+3. 确认页面/订阅是否正常：检查 `/nodes` 是否有“直连 / 链式 / 仅导入”，订阅链接是否带 `scope=direct`、`scope=chain`、`scope=import`
+4. 若继续开发，先在干净工作区验证、脱敏扫描，再同步到 GitHub 仓库 `yun8811/natwebui`

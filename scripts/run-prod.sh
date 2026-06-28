@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 set -eu
-cd /root/.nanobot/workspace/nat-webui-project
+cd "${NAT_WEBUI_HOME:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)}"
 set -a
 . ./.env.runtime
 set +a
