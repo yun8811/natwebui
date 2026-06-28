@@ -6,9 +6,9 @@
 
 GitHub 仓库：`yun8811/natwebui`
 
-运行端口：`8788`
+运行端口：`8788`（可通过 `NAT_WEBUI_PORT` 环境变量自定义）
 
-生产启动脚本：`scripts/run-prod.sh`
+生产启动脚本：`scripts/run-prod.sh`（foreground/systemd）、`scripts/start.sh`（nohup 后台）
 
 重要原则：改功能时先确认实际运行目录，在干净工作区验证并完成脱敏扫描后再提交 push 到 GitHub。
 
@@ -33,11 +33,20 @@ GitHub 仓库：`yun8811/natwebui`
 
 ## 运行方式
 
-本机生产运行应使用：
+本机生产运行应使用 `scripts/start.sh`（nohup 后台模式）或 `scripts/run-prod.sh`（foreground/systemd 模式）：
+
+**start.sh（推荐，后台运行）：**
 
 ```bash
 cd /opt/natxyz
-nohup scripts/run-prod.sh > logs/uvicorn.out 2> logs/uvicorn.err & echo $! > data/uvicorn.pid
+bash scripts/start.sh
+```
+
+**run-prod.sh（前台/写入 systemd unit）：**
+
+```bash
+cd /opt/natxyz
+nohup bash scripts/run-prod.sh > logs/uvicorn.out 2> logs/uvicorn.err & echo $! > data/uvicorn.pid
 ```
 
 停止 / 重启：
@@ -46,7 +55,7 @@ nohup scripts/run-prod.sh > logs/uvicorn.out 2> logs/uvicorn.err & echo $! > dat
 cd /opt/natxyz
 kill -TERM $(cat data/uvicorn.pid) 2>/dev/null || true
 sleep 1
-nohup scripts/run-prod.sh > logs/uvicorn.out 2> logs/uvicorn.err & echo $! > data/uvicorn.pid
+bash scripts/start.sh
 ```
 
 不要直接手动跑 `uvicorn app.main:app ...`，否则可能不会加载 `.env.runtime`，登录密码会退回开发默认值。
@@ -125,6 +134,8 @@ tr '\0' '\n' < /proc/$(cat data/uvicorn.pid)/environ | grep '^NAT_WEBUI_' | sed 
 - `NAT_WEBUI_DB_PATH`
 - `NAT_WEBUI_STATUS_STALE_MINUTES`
 - `NAT_WEBUI_AGENT_REPORT_PATH`
+- `NAT_WEBUI_PORT`（可选，默认 `8788`）
+- `NAT_WEBUI_PUBLIC_BASE_URL`（可选，Agent 上报和订阅链接使用的外网地址）
 
 开发占位默认密码只用于测试/无 env 场景。线上登录以 `.env.runtime` 为准。
 
@@ -182,8 +193,13 @@ tr '\0' '\n' < /proc/$(cat data/uvicorn.pid)/environ | grep '^NAT_WEBUI_' | sed 
   - 覆盖登录、节点 CRUD、订阅、链式、导入节点、chain config 生成等
 
 - `scripts/run-prod.sh`
-  - 当前生产启动脚本
+  - foreground/systemd 启动脚本
   - 负责加载 `.env.runtime` 后启动 uvicorn
+  - 端口可通过 `NAT_WEBUI_PORT` 环境变量自定义
+
+- `scripts/start.sh`
+  - nohup 后台启动脚本
+  - 自动加载 `.env.runtime`、写 PID 文件
 
 - `data/`
   - 运行期数据库、PID，不提交

@@ -11,8 +11,8 @@
 ## 当前运行状态
 
 - 当前运行目录：按部署环境决定；生产环境建议使用 `/opt/natxyz` 或独立工作目录
-- 当前运行端口：`8788`
-- 启动方式：`scripts/run-prod.sh` 或 systemd/进程管理器调用同等命令
+- 当前运行端口：`8788`（可通过 `NAT_WEBUI_PORT` 环境变量自定义）
+- 启动方式：`scripts/start.sh`（nohup 后台，推荐）或 `scripts/run-prod.sh`（foreground/systemd）
 - 运行期环境变量文件：`.env.runtime`
 - 数据库：`data/nat-webui.db`
 - 当前进程 PID 文件：`data/uvicorn.pid`
@@ -160,7 +160,7 @@ python -m pytest -q tests/test_app.py
 ```bash
 cd /opt/natxyz
 kill -TERM $(cat data/uvicorn.pid) 2>/dev/null || true
-nohup scripts/run-prod.sh > logs/uvicorn.out 2> logs/uvicorn.err & echo $! > data/uvicorn.pid
+bash scripts/start.sh
 ```
 
 - 涉及 CSS / 前端静态资源时，记得更新 `app/templates/base.html` 里的 `style.css?v=...`，避免用户看到旧缓存。
