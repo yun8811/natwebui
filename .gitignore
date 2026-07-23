@@ -8,8 +8,10 @@ __pycache__/
 .test-venv*/
 
 # Runtime data
-data/*.db
-logs/*.log
+data/*
+!data/.gitkeep
+logs/*
+!logs/.gitkeep
 
 # OS / editor
 .DS_Store

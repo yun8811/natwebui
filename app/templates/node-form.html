@@ -13,7 +13,7 @@
           {% elif is_tunnel_form %}
           创建 Cloudflare Tunnel 节点：只填写 SSH、应用路由域名和 Tunnel token，本机默认监听 8080。
           {% else %}
-          创建普通 VLESS + Reality 单节点，保留原有 SSH / NAT / 端口字段。
+          创建普通节点，可选 VLESS Reality、Hysteria2 或 Cloudflare Tunnel。
           {% endif %}
         </div>
       </div>
@@ -120,7 +120,9 @@
       <label>
         <span>协议</span>
         <select name="protocol_type" id="protocol-select">
-          <option value="{{ protocol_direct }}" {% if form_values.get('protocol_type') != protocol_tunnel %}selected{% endif %}>vless</option>
+          <option value="{{ protocol_direct }}" {% if form_values.get('protocol_type') in ['', protocol_direct] %}selected{% endif %}>vless</option>
+          <option value="{{ protocol_hysteria2 }}" {% if form_values.get('protocol_type') == protocol_hysteria2 %}selected{% endif %}>hysteria2</option>
+          <option value="{{ protocol_anytls }}" {% if form_values.get('protocol_type') == protocol_anytls %}selected{% endif %}>anytls</option>
           <option value="{{ protocol_tunnel }}" {% if form_values.get('protocol_type') == protocol_tunnel %}selected{% endif %}>tunnel</option>
         </select>
       </label>
@@ -144,21 +146,31 @@
         </div>
       </label>
 
-      <label class="vless-only">
+      <label class="deploy-port-only">
         <span>公网端口</span>
         <input type="number" name="public_port" value="{{ form_values['public_port'] }}" min="1" max="65535">
       </label>
-      <label class="vless-only">
+      <label class="deploy-port-only">
         <span>内网监听端口</span>
         <input type="number" name="listen_port" value="{{ form_values['listen_port'] }}" min="1" max="65535">
       </label>
-      <label class="vless-only">
-        <span>Reality 伪装目标</span>
+      <label class="sni-target-only">
+        <span data-vless-label="Reality 伪装目标" data-hy2-label="Hysteria2 SNI" data-anytls-label="AnyTLS SNI">Reality 伪装目标</span>
         <input type="text" name="selected_reality_target" value="{{ form_values.get('selected_reality_target') or 'www.example.com' }}" placeholder="www.example.com">
       </label>
-      <div class="full-span vless-only">
-        <div class="field-note">只填域名，不带 https:// 和端口；脚本会同时写入 Reality server_name / handshake server，端口固定 443。</div>
+      <div class="full-span sni-target-only">
+        <div class="field-note vless-note">只填域名，不带 https:// 和端口；脚本会同时写入 Reality server_name / handshake server，端口固定 443。</div>
+        <div class="field-note hy2-note">Hysteria2 使用此域名作为 SNI，并自动生成带 SAN 的自签证书。</div>
+        <div class="field-note anytls-note">AnyTLS 使用此域名作为 SNI，并自动生成带 SAN 的自签证书。</div>
       </div>
+      <label class="hy2-only">
+        <span>HY2 上行 Mbps</span>
+        <input type="number" name="hy2_up_mbps" value="{{ form_values.get('hy2_up_mbps', 200) }}" min="1" step="1">
+      </label>
+      <label class="hy2-only">
+        <span>HY2 下行 Mbps</span>
+        <input type="number" name="hy2_down_mbps" value="{{ form_values.get('hy2_down_mbps', 1000) }}" min="1" step="1">
+      </label>
       <label class="tunnel-only">
         <span>应用路由域名</span>
         <input type="text" name="cf_host" value="{{ form_values.get('cf_host', '') }}" placeholder="node.example.com">
@@ -187,6 +199,8 @@
       <div class="full-span">
         <div class="field-note tunnel-note">Tunnel 模式默认本机 8080；Cloudflare Zero Trust 的 Public Hostname / 应用路由需要指向该本地端口。</div>
         <div class="field-note vless-note">VLESS 模式这里可填固定 IP 或 DDNS 域名；Reality 伪装目标可自定义，留默认即可；地区留空则自动按当前解析 IP 识别，手动填写后优先使用手动值。</div>
+        <div class="field-note hy2-note">Hysteria2 模式会生成 hy2:// 分享链接，公网端口和监听端口沿用这里填写的端口。</div>
+        <div class="field-note anytls-note">AnyTLS 模式会生成 anytls:// 分享链接，公网端口和监听端口沿用这里填写的端口。</div>
       </div>
       {% endif %}
     </div>
@@ -202,6 +216,8 @@
   const select = document.getElementById('protocol-select');
   if (!select) return;
   const tunnelValue = '{{ protocol_tunnel }}';
+  const hysteria2Value = '{{ protocol_hysteria2 }}';
+  const anytlsValue = '{{ protocol_anytls }}';
   const toggleRequired = (selector, required) => {
     document.querySelectorAll(selector).forEach((el) => {
       el.querySelectorAll('input, select, textarea').forEach((input) => {
@@ -212,11 +228,22 @@
   };
   const apply = () => {
     const isTunnel = select.value === tunnelValue;
+    const isHy2 = select.value === hysteria2Value;
+    const isAnyTLS = select.value === anytlsValue;
+    const isDirectDeploy = !isTunnel;
     document.querySelectorAll('.tunnel-only').forEach((el) => el.style.display = isTunnel ? '' : 'none');
-    document.querySelectorAll('.vless-only, .vless-note').forEach((el) => el.style.display = isTunnel ? 'none' : '');
+    document.querySelectorAll('.hy2-only').forEach((el) => el.style.display = isHy2 ? '' : 'none');
+    document.querySelectorAll('.deploy-port-only, .sni-target-only').forEach((el) => el.style.display = isDirectDeploy ? '' : 'none');
+    document.querySelectorAll('.vless-note').forEach((el) => el.style.display = (!isTunnel && !isHy2 && !isAnyTLS) ? '' : 'none');
+    document.querySelectorAll('.hy2-note').forEach((el) => el.style.display = isHy2 ? '' : 'none');
+    document.querySelectorAll('.anytls-note').forEach((el) => el.style.display = isAnyTLS ? '' : 'none');
     document.querySelectorAll('.tunnel-note').forEach((el) => el.style.display = isTunnel ? '' : 'none');
+    document.querySelectorAll('[data-vless-label]').forEach((el) => {
+      el.textContent = isAnyTLS ? el.dataset.anytlsLabel : (isHy2 ? el.dataset.hy2Label : el.dataset.vlessLabel);
+    });
     toggleRequired('.tunnel-only', isTunnel);
-    toggleRequired('.vless-only', !isTunnel);
+    toggleRequired('.hy2-only', isHy2);
+    toggleRequired('.deploy-port-only, .sni-target-only', isDirectDeploy);
   };
   select.addEventListener('change', apply);
   apply();

@@ -1,7 +1,8 @@
 {% extends 'base.html' %}
 
 {% macro subscription_buttons(urls, label='', scope='all') -%}
-  <button class="icon-btn sub-brand-icon" type="button" title="复制{{ label }} v2rayN 订阅 URL" aria-label="复制{{ label }} v2rayN 订阅 URL" data-sub-url data-sub-scope="{{ scope }}" data-sub-kind="v2rayn" onclick='copyText({{ urls.v2rayn | tojson }}, this)'><span class="sr-only">复制{{ label }} v2rayN 订阅 URL</span><img src="/static/icons/v2rayn.png" alt="" aria-hidden="true"></button>
+  <button class="icon-btn sub-brand-icon" type="button" title="复制{{ label }} v2rayNG 订阅 URL" aria-label="复制{{ label }} v2rayNG 订阅 URL" data-sub-url data-sub-scope="{{ scope }}" data-sub-kind="v2rayng" onclick='copyText({{ urls.v2rayng | tojson }}, this)'><span class="sr-only">复制{{ label }} v2rayNG 订阅 URL</span><img src="/static/icons/v2rayn.png" alt="" aria-hidden="true"></button>
+  <button class="icon-btn sub-brand-icon sub-text-icon" type="button" title="复制{{ label }} sing-box / NekoBox 订阅 URL" aria-label="复制{{ label }} sing-box / NekoBox 订阅 URL" data-sub-url data-sub-scope="{{ scope }}" data-sub-kind="singbox" onclick='copyText({{ urls.singbox | tojson }}, this)'><span aria-hidden="true">SB</span><span class="sr-only">复制{{ label }} sing-box / NekoBox 订阅 URL</span></button>
   <button class="icon-btn sub-brand-icon" type="button" title="复制{{ label }} Clash 订阅 URL" aria-label="复制{{ label }} Clash 订阅 URL" data-sub-url data-sub-scope="{{ scope }}" data-sub-kind="clash" onclick='copyText({{ urls.clash | tojson }}, this)'><span class="sr-only">复制{{ label }} Clash 订阅 URL</span><img src="/static/icons/clash.png" alt="" aria-hidden="true"></button>
 {%- endmacro %}
 
@@ -110,12 +111,14 @@
 {%- endmacro %}
 
 {% block topbar_actions %}
-<a class="sr-only" href="{{ subscription_urls.all.v2rayn }}">复制全部 v2rayN 订阅 URL</a>
+<a class="sr-only" href="{{ subscription_urls.all.v2rayng }}">复制全部 v2rayNG 订阅 URL</a>
+<span class="sr-only">复制全部 sing-box / NekoBox 订阅 URL</span>
 <span class="sr-only">复制链式 Clash 订阅 URL</span>
-<span class="sr-only">复制导入节点 v2rayN 订阅 URL</span>
+<span class="sr-only">复制导入节点 v2rayNG 订阅 URL</span>
 <script type="application/json" id="subscriptionUrlsJson">{{ subscription_urls | tojson }}</script>
 <div class="top-sub-actions" aria-label="当前分类订阅">
-  <button class="icon-btn sub-brand-icon" type="button" title="复制当前分类 v2rayN 订阅 URL" aria-label="复制当前分类 v2rayN 订阅 URL" data-current-sub data-sub-kind="v2rayn"><span class="sr-only">复制直连 v2rayN 订阅 URL</span><img src="/static/icons/v2rayn.png" alt="" aria-hidden="true"></button>
+  <button class="icon-btn sub-brand-icon" type="button" title="复制当前分类 v2rayNG 订阅 URL" aria-label="复制当前分类 v2rayNG 订阅 URL" data-current-sub data-sub-kind="v2rayng"><span class="sr-only">复制直连 v2rayNG 订阅 URL</span><img src="/static/icons/v2rayn.png" alt="" aria-hidden="true"></button>
+  <button class="icon-btn sub-brand-icon sub-text-icon" type="button" title="复制当前分类 sing-box / NekoBox 订阅 URL" aria-label="复制当前分类 sing-box / NekoBox 订阅 URL" data-current-sub data-sub-kind="singbox"><span aria-hidden="true">SB</span><span class="sr-only">复制直连 sing-box / NekoBox 订阅 URL</span></button>
   <button class="icon-btn sub-brand-icon" type="button" title="复制当前分类 Clash 订阅 URL" aria-label="复制当前分类 Clash 订阅 URL" data-current-sub data-sub-kind="clash"><span class="sr-only">复制直连 Clash 订阅 URL</span><img src="/static/icons/clash.png" alt="" aria-hidden="true"></button>
   <button class="icon-btn rotate-token-icon" type="button" id="rotateSubscriptionToken" title="轮换订阅 token" aria-label="轮换订阅 token">⟳</button>
 </div>
@@ -228,6 +231,7 @@
 
 <script>
 (function () {
+  const STATUS_REFRESH_MS = 60 * 1000;
   const tabs = Array.from(document.querySelectorAll('.node-tab'));
   const panels = Array.from(document.querySelectorAll('.node-tab-panel'));
   const subscriptionUrls = JSON.parse(document.getElementById('subscriptionUrlsJson')?.textContent || '{}');
@@ -235,11 +239,12 @@
 
   function updateCurrentSubscriptionButtons() {
     document.querySelectorAll('[data-current-sub]').forEach((button) => {
-      const kind = button.dataset.subKind || 'v2rayn';
+      const kind = button.dataset.subKind || 'v2rayng';
       const nextUrl = subscriptionUrls?.[activeScope]?.[kind];
       const label = activeScope === 'chain' ? '链式' : (activeScope === 'imported' ? '导入节点' : '直连');
+      const kindLabel = kind === 'clash' ? 'Clash' : (kind === 'singbox' ? 'sing-box / NekoBox' : 'v2rayNG');
       button.dataset.subScope = activeScope;
-      button.title = `复制${label} ${kind === 'clash' ? 'Clash' : 'v2rayN'} 订阅 URL`;
+      button.title = `复制${label} ${kindLabel} 订阅 URL`;
       button.setAttribute('aria-label', button.title);
       button.onclick = () => copyText(nextUrl || '', button);
       button.disabled = !nextUrl;
@@ -270,6 +275,16 @@
   });
   activateTab(window.location.hash.replace('#', '') || 'direct');
 
+  let statusRefreshTimer = window.setTimeout(() => window.location.reload(), STATUS_REFRESH_MS);
+  window.addEventListener('pageshow', (event) => {
+    if (event.persisted) window.location.reload();
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    window.clearTimeout(statusRefreshTimer);
+    statusRefreshTimer = window.setTimeout(() => window.location.reload(), STATUS_REFRESH_MS);
+  });
+
   const rotateButton = document.getElementById('rotateSubscriptionToken');
   const rotateModal = document.getElementById('rotateTokenModal');
   const rotateCancel = document.getElementById('rotateTokenCancel');
@@ -286,7 +301,8 @@
     rotateClose.hidden = true;
     rotateConfirm.disabled = false;
     rotateConfirm.textContent = '确认轮换';
-    rotateMessage.textContent = '轮换后，当前 token 会在 24 小时后失效。请尽快把 v2rayN / Clash 客户端里的订阅链接更新为新 token。';
+      rotateMessage.textContent = '轮换后，当前 token 会在 24 小时后失效。请尽快把 v2rayNG / sing-box / Clash 客户端里的订阅链接更新为新 token。';
+
     rotateResult.hidden = true;
     rotateResult.textContent = '';
   }

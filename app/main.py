@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
+from . import protocols as _protocols
 from .auth import login_required, verify_login
 from .chain_deployer import apply_front_chain_config
 from .config import AGENT_REPORT_PATH, APP_DIR, APP_NAME, SESSION_COOKIE, SESSION_SECRET, STATUS_STALE_MINUTES
@@ -62,6 +63,7 @@ app.add_middleware(
 )
 app.mount("/static", StaticFiles(directory=str(APP_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(APP_DIR / "templates"))
+_protocols  # ensure protocol handlers are registered
 
 
 @app.on_event("startup")
@@ -144,6 +146,8 @@ CHAIN_MODE = "vless_reality_to_vless_reality"
 PROTOCOL_DIRECT = "vless_reality_singbox"
 PROTOCOL_CHAIN = "vless_chain"
 PROTOCOL_TUNNEL = "cf_vless_ws"
+PROTOCOL_HYSTERIA2 = "hysteria2"
+PROTOCOL_ANYTLS = "anytls"
 PROTOCOL_IMPORT = "imported_vless"
 
 
@@ -162,6 +166,18 @@ def is_import_protocol(protocol_type: object) -> bool:
 
 def is_direct_vless_protocol(protocol_type: object) -> bool:
     return str(protocol_type or "") in {"", PROTOCOL_DIRECT}
+
+
+def is_hysteria2_protocol(protocol_type: object) -> bool:
+    return str(protocol_type or "") == PROTOCOL_HYSTERIA2
+
+
+def is_anytls_protocol(protocol_type: object) -> bool:
+    return str(protocol_type or "") == PROTOCOL_ANYTLS
+
+
+def is_direct_deploy_protocol(protocol_type: object) -> bool:
+    return str(protocol_type or "") in {"", PROTOCOL_DIRECT, PROTOCOL_HYSTERIA2, PROTOCOL_ANYTLS}
 
 
 def is_chain_backend_protocol(protocol_type: object) -> bool:
@@ -189,6 +205,8 @@ def node_to_form_values(node) -> dict[str, object]:
         "cf_tunnel_token": node["cf_tunnel_token"] or "",
         "ws_port": node["ws_port"] or 8080,
         "ws_path": node["ws_path"] or "/",
+        "hy2_up_mbps": node["hy2_up_mbps"] or 200,
+        "hy2_down_mbps": node["hy2_down_mbps"] or 1000,
         "last_vless_link": node["last_vless_link"] or "",
     }
 
@@ -214,6 +232,8 @@ def default_form_values() -> dict[str, object]:
         "cf_tunnel_token": "",
         "ws_port": 8080,
         "ws_path": "/",
+        "hy2_up_mbps": 200,
+        "hy2_down_mbps": 1000,
         "last_vless_link": "",
     }
 
@@ -297,6 +317,8 @@ def apply_imported_vless_defaults(cleaned: dict[str, object], link_info: dict[st
     cleaned["cf_tunnel_token"] = None
     cleaned["ws_port"] = 8080
     cleaned["ws_path"] = "/"
+    cleaned["hy2_up_mbps"] = 200
+    cleaned["hy2_down_mbps"] = 1000
     cleaned["last_vless_link"] = str(link_info.get("link") or "")
 
 
@@ -336,7 +358,7 @@ def clean_node_form(form: dict[str, str], *, editing_node_id: str | None = None)
         return cleaned, errors
 
     protocol_type = str(form.get("protocol_type") or PROTOCOL_DIRECT).strip() or PROTOCOL_DIRECT
-    if protocol_type not in {PROTOCOL_DIRECT, PROTOCOL_CHAIN, PROTOCOL_TUNNEL, PROTOCOL_IMPORT}:
+    if protocol_type not in {PROTOCOL_DIRECT, PROTOCOL_HYSTERIA2, PROTOCOL_ANYTLS, PROTOCOL_CHAIN, PROTOCOL_TUNNEL, PROTOCOL_IMPORT}:
         errors.append("protocol_type 不支持")
         protocol_type = PROTOCOL_DIRECT
     cleaned["protocol_type"] = protocol_type
@@ -400,6 +422,13 @@ def clean_node_form(form: dict[str, str], *, editing_node_id: str | None = None)
     cleaned["cf_tunnel_token"] = cf_tunnel_token or None
     cleaned["ws_port"] = str(form.get("ws_port") or "8080").strip() or "8080"
     cleaned["ws_path"] = ws_path
+    hy2_up_mbps = str(form.get("hy2_up_mbps") or "200").strip() or "200"
+    hy2_down_mbps = str(form.get("hy2_down_mbps") or "1000").strip() or "1000"
+    for label, raw_value in (("Hysteria2 上行带宽", hy2_up_mbps), ("Hysteria2 下行带宽", hy2_down_mbps)):
+        if not raw_value.isdigit() or int(raw_value) <= 0:
+            errors.append(f"{label}必须是正整数 Mbps")
+    cleaned["hy2_up_mbps"] = int(hy2_up_mbps) if hy2_up_mbps.isdigit() else 200
+    cleaned["hy2_down_mbps"] = int(hy2_down_mbps) if hy2_down_mbps.isdigit() else 1000
 
     if is_chain_protocol(protocol_type):
         front_node_id = str(cleaned["front_node_id"] or "")
@@ -485,6 +514,7 @@ def protocol_label(protocol_type: object) -> str:
         PROTOCOL_IMPORT: "import",
         "hy2": "hy2",
         "hysteria2": "hy2",
+        PROTOCOL_ANYTLS: "anytls",
     }
     return mapping.get(str(protocol_type or ""), str(protocol_type or "-"))
 
@@ -539,6 +569,8 @@ def render_node_form(
             "protocol_chain": PROTOCOL_CHAIN,
             "protocol_tunnel": PROTOCOL_TUNNEL,
             "protocol_import": PROTOCOL_IMPORT,
+            "protocol_hysteria2": PROTOCOL_HYSTERIA2,
+            "protocol_anytls": PROTOCOL_ANYTLS,
             "chain_mode": CHAIN_MODE,
             "form_kind": form_kind,
             "is_chain_form": form_kind == "chain" or form_values.get("protocol_type") == PROTOCOL_CHAIN,
@@ -613,7 +645,7 @@ def build_install_command(node: dict | object) -> str:
 
 SUBSCRIPTION_SCOPES = {
     "all": None,
-    "direct": (PROTOCOL_DIRECT, PROTOCOL_TUNNEL),
+    "direct": (PROTOCOL_DIRECT, PROTOCOL_HYSTERIA2, PROTOCOL_ANYTLS, PROTOCOL_TUNNEL),
     "chain": PROTOCOL_CHAIN,
     "imported": PROTOCOL_IMPORT,
 }
@@ -653,9 +685,12 @@ def subscription_filename(scope: str, kind: str) -> str:
     return f"{prefix}-{suffix}"
 
 
-def build_subscription_url(request: Request, scope: str = "all") -> str:
+def build_subscription_url(request: Request, scope: str = "all", client: str = "default") -> str:
     token = get_or_create_subscription_token()
-    return str(request.url_for("subscription_feed", token=token).include_query_params(scope=normalize_subscription_scope(scope)))
+    params = {"scope": normalize_subscription_scope(scope)}
+    if client != "default":
+        params["client"] = client
+    return str(request.url_for("subscription_feed", token=token).include_query_params(**params))
 
 
 def build_clash_subscription_url(request: Request, scope: str = "all") -> str:
@@ -668,6 +703,10 @@ def build_clash_subscription_url(request: Request, scope: str = "all") -> str:
 def display_protocol_label(protocol_type: str | None) -> str:
     if protocol_type == PROTOCOL_TUNNEL:
         return "tunnel"
+    if protocol_type == PROTOCOL_HYSTERIA2:
+        return "hy2"
+    if protocol_type == PROTOCOL_ANYTLS:
+        return "anytls"
     if protocol_type == PROTOCOL_CHAIN:
         return "chain"
     if protocol_type == PROTOCOL_IMPORT:
@@ -713,7 +752,42 @@ def display_vless_link_for_node(node: sqlite3.Row | dict[str, object], node_by_i
             return link
     return vless_link_with_node_remark(str(node["last_vless_link"] or ""), node, region_source_node=region_source_node)
 
-def build_subscription_payload(scope: str = "all") -> str:
+def _hysteria2_link_for_client(link: str, client: str) -> str:
+    if not link.startswith("hysteria2://"):
+        return link
+    parsed = urllib.parse.urlparse(link)
+    query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+    if client != "xray":
+        return link
+    cert_pin = query.get("pinnedPeerCertSha256") or query.get("pinSHA256")
+    if cert_pin:
+        query["pinSHA256"] = [cert_pin[-1]]
+    query.pop("insecure", None)
+    ordered = {}
+    for key in [
+        "sni",
+        "peer",
+        "pinSHA256",
+        "obfs",
+        "upmbps",
+        "downmbps",
+    ]:
+        if key in query:
+            ordered[key] = query[key][-1]
+    for key, values in query.items():
+        if key not in ordered and key not in {"pinnedPeerCertSha256", "verifyPeerCertByName"}:
+            ordered[key] = values[-1]
+    return urllib.parse.urlunparse((
+        parsed.scheme,
+        parsed.netloc,
+        parsed.path,
+        parsed.params,
+        urllib.parse.urlencode(ordered),
+        parsed.fragment,
+    ))
+
+
+def build_subscription_payload(scope: str = "all", client: str = "default") -> str:
     protocol_type = SUBSCRIPTION_SCOPES[normalize_subscription_scope(scope)]
     nodes = list_subscribable_nodes(protocol_type)
     all_nodes = list_nodes()
@@ -721,6 +795,7 @@ def build_subscription_payload(scope: str = "all") -> str:
     links = []
     for node in nodes:
         link = display_vless_link_for_node(node, node_by_id).strip()
+        link = _hysteria2_link_for_client(link, client)
         if link:
             links.append(link)
     plain = "\n".join(links)
@@ -766,6 +841,74 @@ def _vless_link_to_clash_proxy(link: str) -> dict[str, object] | None:
     return proxy
 
 
+def _pin_sha256_to_base64(pin: str) -> str:
+    value = str(pin or "").strip()
+    compact = value.replace(":", "").lower()
+    if len(compact) == 64 and all(ch in "0123456789abcdef" for ch in compact):
+        try:
+            return base64.b64encode(bytes.fromhex(compact)).decode("ascii")
+        except ValueError:
+            return value
+    return value
+
+
+def _hysteria2_link_to_clash_proxy(link: str) -> dict[str, object] | None:
+    try:
+        parsed = urllib.parse.urlparse(link)
+    except ValueError:
+        return None
+    if parsed.scheme not in {"hysteria2", "hy2"} or not parsed.hostname or not parsed.username:
+        return None
+    query = urllib.parse.parse_qs(parsed.query)
+    name = urllib.parse.unquote(parsed.fragment or parsed.hostname)
+    peer = _query_first(query, "sni") or _query_first(query, "peer")
+    pin_sha256 = _query_first(query, "pinSHA256") or _query_first(query, "pinnedPeerCertSha256")
+    proxy: dict[str, object] = {
+        "name": name,
+        "type": "hysteria2",
+        "server": parsed.hostname,
+        "port": parsed.port or 443,
+        "password": urllib.parse.unquote(parsed.username),
+        "sni": peer,
+        "skip-cert-verify": _query_first(query, "insecure") in {"1", "true", "True"},
+        "up": f"{_query_first(query, 'upmbps', '200')} Mbps",
+        "down": f"{_query_first(query, 'downmbps', '1000')} Mbps",
+    }
+    if pin_sha256:
+        proxy["certificate-public-key-sha256"] = _pin_sha256_to_base64(pin_sha256)
+    obfs = _query_first(query, "obfs")
+    if obfs and obfs != "none":
+        proxy["obfs"] = obfs
+    return proxy
+
+
+def _anytls_link_to_clash_proxy(link: str) -> dict[str, object] | None:
+    try:
+        parsed = urllib.parse.urlparse(link)
+    except ValueError:
+        return None
+    if parsed.scheme != "anytls" or not parsed.hostname or not parsed.username:
+        return None
+    query = urllib.parse.parse_qs(parsed.query)
+    name = urllib.parse.unquote(parsed.fragment or parsed.hostname)
+    sni = _query_first(query, "sni") or _query_first(query, "peer")
+    pin_sha256 = _query_first(query, "pinSHA256") or _query_first(query, "pinnedPeerCertSha256")
+    proxy: dict[str, object] = {
+        "name": name,
+        "type": "anytls",
+        "server": parsed.hostname,
+        "port": parsed.port or 443,
+        "password": urllib.parse.unquote(parsed.username),
+        "sni": sni,
+        "client-fingerprint": _query_first(query, "fp", "chrome") or "chrome",
+        "skip-cert-verify": _query_first(query, "insecure") in {"1", "true", "True"},
+        "udp": True,
+    }
+    if pin_sha256:
+        proxy["certificate-public-key-sha256"] = _pin_sha256_to_base64(pin_sha256)
+    return proxy
+
+
 def build_clash_subscription_payload(scope: str = "all") -> str:
     protocol_type = SUBSCRIPTION_SCOPES[normalize_subscription_scope(scope)]
     nodes = list_subscribable_nodes(protocol_type)
@@ -778,6 +921,10 @@ def build_clash_subscription_payload(scope: str = "all") -> str:
         if not link:
             continue
         proxy = _vless_link_to_clash_proxy(link)
+        if not proxy:
+            proxy = _hysteria2_link_to_clash_proxy(link)
+        if not proxy:
+            proxy = _anytls_link_to_clash_proxy(link)
         if not proxy:
             continue
         base_name = str(proxy["name"])
@@ -853,16 +1000,16 @@ async def nodes_page(request: Request):
             "can_reinstall": node["protocol_type"] != PROTOCOL_IMPORT,
             "is_chain": is_chain,
         })
-    direct_nodes = [node for node in nodes if node["protocol_type"] in {PROTOCOL_DIRECT, PROTOCOL_TUNNEL}]
+    direct_nodes = [node for node in nodes if node["protocol_type"] in {PROTOCOL_DIRECT, PROTOCOL_HYSTERIA2, PROTOCOL_ANYTLS, PROTOCOL_TUNNEL}]
     chain_nodes = [node for node in nodes if node["is_chain"]]
     import_nodes = [node for node in nodes if node["protocol_type"] == PROTOCOL_IMPORT]
     subscription_urls = {
-        "all": {"v2rayn": build_subscription_url(request), "clash": build_clash_subscription_url(request)},
-        "direct": {"v2rayn": build_subscription_url(request, "direct"), "clash": build_clash_subscription_url(request, "direct")},
-        "chain": {"v2rayn": build_subscription_url(request, "chain"), "clash": build_clash_subscription_url(request, "chain")},
-        "imported": {"v2rayn": build_subscription_url(request, "imported"), "clash": build_clash_subscription_url(request, "imported")},
+        "all": {"v2rayng": build_subscription_url(request, client="xray"), "singbox": build_subscription_url(request), "clash": build_clash_subscription_url(request)},
+        "direct": {"v2rayng": build_subscription_url(request, "direct", client="xray"), "singbox": build_subscription_url(request, "direct"), "clash": build_clash_subscription_url(request, "direct")},
+        "chain": {"v2rayng": build_subscription_url(request, "chain", client="xray"), "singbox": build_subscription_url(request, "chain"), "clash": build_clash_subscription_url(request, "chain")},
+        "imported": {"v2rayng": build_subscription_url(request, "imported", client="xray"), "singbox": build_subscription_url(request, "imported"), "clash": build_clash_subscription_url(request, "imported")},
     }
-    return templates.TemplateResponse(
+    response = templates.TemplateResponse(
         request,
         "nodes.html",
         {
@@ -872,7 +1019,7 @@ async def nodes_page(request: Request):
             "direct_nodes": direct_nodes,
             "chain_nodes": chain_nodes,
             "import_nodes": import_nodes,
-            "subscription_url": subscription_urls["all"]["v2rayn"],
+            "subscription_url": subscription_urls["all"]["v2rayng"],
             "clash_subscription_url": subscription_urls["all"]["clash"],
             "subscription_urls": subscription_urls,
             "subscription_state": get_subscription_token_state(),
@@ -880,6 +1027,8 @@ async def nodes_page(request: Request):
             "tag_colors": TAG_COLORS,
         },
     )
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.post("/subscriptions/rotate-token")
@@ -888,10 +1037,10 @@ async def rotate_subscription_token_action(request: Request):
     token_state = rotate_subscription_token()
     new_token = token_state["subscription_token"]
     subscription_urls = {
-        "all": {"v2rayn": str(request.url_for("subscription_feed", token=new_token).include_query_params(scope="all")), "clash": str(request.url_for("clash_subscription_feed", token=new_token).include_query_params(scope="all"))},
-        "direct": {"v2rayn": str(request.url_for("subscription_feed", token=new_token).include_query_params(scope="direct")), "clash": str(request.url_for("clash_subscription_feed", token=new_token).include_query_params(scope="direct"))},
-        "chain": {"v2rayn": str(request.url_for("subscription_feed", token=new_token).include_query_params(scope="chain")), "clash": str(request.url_for("clash_subscription_feed", token=new_token).include_query_params(scope="chain"))},
-        "imported": {"v2rayn": str(request.url_for("subscription_feed", token=new_token).include_query_params(scope="imported")), "clash": str(request.url_for("clash_subscription_feed", token=new_token).include_query_params(scope="imported"))},
+        "all": {"v2rayng": str(request.url_for("subscription_feed", token=new_token).include_query_params(scope="all", client="xray")), "singbox": str(request.url_for("subscription_feed", token=new_token).include_query_params(scope="all")), "clash": str(request.url_for("clash_subscription_feed", token=new_token).include_query_params(scope="all"))},
+        "direct": {"v2rayng": str(request.url_for("subscription_feed", token=new_token).include_query_params(scope="direct", client="xray")), "singbox": str(request.url_for("subscription_feed", token=new_token).include_query_params(scope="direct")), "clash": str(request.url_for("clash_subscription_feed", token=new_token).include_query_params(scope="direct"))},
+        "chain": {"v2rayng": str(request.url_for("subscription_feed", token=new_token).include_query_params(scope="chain", client="xray")), "singbox": str(request.url_for("subscription_feed", token=new_token).include_query_params(scope="chain")), "clash": str(request.url_for("clash_subscription_feed", token=new_token).include_query_params(scope="chain"))},
+        "imported": {"v2rayng": str(request.url_for("subscription_feed", token=new_token).include_query_params(scope="imported", client="xray")), "singbox": str(request.url_for("subscription_feed", token=new_token).include_query_params(scope="imported")), "clash": str(request.url_for("clash_subscription_feed", token=new_token).include_query_params(scope="imported"))},
     }
     return JSONResponse({
         "ok": True,
@@ -903,11 +1052,11 @@ async def rotate_subscription_token_action(request: Request):
 
 
 @app.get("/sub/{token}", response_class=PlainTextResponse, name="subscription_feed")
-async def subscription_feed(token: str, scope: str = "all"):
+async def subscription_feed(token: str, scope: str = "all", client: str = "default"):
     if not validate_subscription_token(token):
         return PlainTextResponse("forbidden", status_code=403)
     scope = normalize_subscription_scope(scope)
-    payload = build_subscription_payload(scope)
+    payload = build_subscription_payload(scope, client=client)
     return PlainTextResponse(
         payload,
         media_type="text/plain; charset=utf-8",
@@ -1003,6 +1152,8 @@ async def node_create_submit(
     listen_port: str = Form(""),
     protocol_type: str = Form(PROTOCOL_DIRECT),
     selected_reality_target: str = Form(""),
+    hy2_up_mbps: str = Form("200"),
+    hy2_down_mbps: str = Form("1000"),
     cf_host: str = Form(""),
     cf_tunnel_token: str = Form(""),
     ws_port: str = Form("8080"),
@@ -1024,6 +1175,8 @@ async def node_create_submit(
             "listen_port": listen_port,
             "protocol_type": protocol_type,
             "selected_reality_target": selected_reality_target,
+            "hy2_up_mbps": hy2_up_mbps,
+            "hy2_down_mbps": hy2_down_mbps,
             "cf_host": cf_host,
             "cf_tunnel_token": cf_tunnel_token,
             "ws_port": ws_port,
@@ -1036,7 +1189,7 @@ async def node_create_submit(
         }
     )
 
-    if not errors and is_direct_vless_protocol(payload.get("protocol_type")):
+    if not errors and is_direct_deploy_protocol(payload.get("protocol_type")):
         conflict = find_direct_vless_port_conflict(
             str(payload["ip"]),
             int(payload["public_port"]),
@@ -1400,6 +1553,8 @@ async def node_edit_submit(
     listen_port: str = Form(""),
     protocol_type: str = Form(PROTOCOL_DIRECT),
     selected_reality_target: str = Form(""),
+    hy2_up_mbps: str = Form("200"),
+    hy2_down_mbps: str = Form("1000"),
     cf_host: str = Form(""),
     cf_tunnel_token: str = Form(""),
     ws_port: str = Form("8080"),
@@ -1430,6 +1585,8 @@ async def node_edit_submit(
             "listen_port": listen_port,
             "protocol_type": protocol_type,
             "selected_reality_target": selected_reality_target,
+            "hy2_up_mbps": hy2_up_mbps,
+            "hy2_down_mbps": hy2_down_mbps,
             "cf_host": cf_host,
             "cf_tunnel_token": cf_tunnel_token,
             "ws_port": ws_port,
@@ -1443,7 +1600,7 @@ async def node_edit_submit(
         editing_node_id=node_id,
     )
 
-    if not errors and is_direct_vless_protocol(payload.get("protocol_type")):
+    if not errors and is_direct_deploy_protocol(payload.get("protocol_type")):
         conflict = find_direct_vless_port_conflict(
             str(payload["ip"]),
             int(payload["public_port"]),

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import os
 import shlex
 import socket
 import subprocess
@@ -14,9 +15,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
-from .config import AGENT_REPORT_PATH, APP_DIR, PUBLIC_BASE_URL
+from .config import AGENT_REPORT_PATH, APP_DIR
+from .protocols.models import ProtocolBuildContext
+from .protocols.hysteria2 import Hysteria2Protocol  # noqa: F401 - register protocol
+from .protocols.registry import get_protocol
+from .protocols.vless_reality import VlessRealityProtocol  # noqa: F401 - register protocol
 from .regions import replace_vless_fragment, vless_remark_for_node
 
 REMOTE_APP_DIR = "/opt/natctl"
@@ -102,6 +108,20 @@ def resolve_host_for_ssh(host: str) -> str:
 
 
 
+class RemoteCommandError(Exception):
+    def __init__(self, returncode: int, args: list[str], output: str):
+        super().__init__(f"remote command exited with status {returncode}")
+        self.returncode = returncode
+        self.args = args
+        self.output = output
+
+    def __str__(self) -> str:
+        output = self.output.strip()
+        if output:
+            return f"remote command exited with status {self.returncode}\n{output}"
+        return f"remote command exited with status {self.returncode}"
+
+
 class RemoteExecutor:
     def __init__(self, host: str, port: int, user: str, password: str):
         self.host = resolve_host_for_ssh(host)
@@ -111,24 +131,25 @@ class RemoteExecutor:
         self.password = password
 
     def run(self, script: str, *, timeout: int = 120) -> str:
+        args = [
+            "sshpass",
+            "-p",
+            self.password,
+            "ssh",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "ConnectTimeout=12",
+            "-p",
+            str(self.port),
+            f"{self.user}@{self.host}",
+            "sh",
+            "-s",
+        ]
         proc = subprocess.run(
-            [
-                "sshpass",
-                "-p",
-                self.password,
-                "ssh",
-                "-o",
-                "StrictHostKeyChecking=no",
-                "-o",
-                "UserKnownHostsFile=/dev/null",
-                "-o",
-                "ConnectTimeout=12",
-                "-p",
-                str(self.port),
-                f"{self.user}@{self.host}",
-                "sh",
-                "-s",
-            ],
+            args,
             input=script,
             text=True,
             capture_output=True,
@@ -136,13 +157,35 @@ class RemoteExecutor:
         )
         output = (proc.stdout or "") + (proc.stderr or "")
         if proc.returncode != 0:
-            raise subprocess.CalledProcessError(proc.returncode, proc.args, output=output)
+            raise RemoteCommandError(proc.returncode, args, output)
         return output.strip()
 
 
 
 def shell_quote(value: str) -> str:
     return shlex.quote(value)
+
+
+
+def first_clean_output_line(output: str) -> str:
+    return next((line.strip() for line in output.splitlines() if line.strip() and not line.startswith("Warning:")), "")
+
+
+
+def extract_pem_certificate(output: str) -> str:
+    lines = []
+    in_certificate = False
+    for line in output.splitlines():
+        stripped = line.strip()
+        if stripped == "-----BEGIN CERTIFICATE-----":
+            in_certificate = True
+            lines = [stripped]
+            continue
+        if in_certificate:
+            lines.append(stripped)
+            if stripped == "-----END CERTIFICATE-----":
+                return "\n".join(lines) + "\n"
+    return ""
 
 
 
@@ -156,8 +199,19 @@ def generate_reality_materials() -> tuple[str, str, str, str]:
     generated_uuid = str(uuid.uuid4())
     private_key_obj = X25519PrivateKey.generate()
     public_key_obj = private_key_obj.public_key()
-    generated_private_key = urlsafe_b64encode(private_key_obj.private_bytes_raw()).decode().rstrip("=")
-    generated_public_key = urlsafe_b64encode(public_key_obj.public_bytes_raw()).decode().rstrip("=")
+    generated_private_key = urlsafe_b64encode(
+        private_key_obj.private_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PrivateFormat.Raw,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+    ).decode().rstrip("=")
+    generated_public_key = urlsafe_b64encode(
+        public_key_obj.public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+    ).decode().rstrip("=")
     generated_short_id = uuid.uuid4().hex[:16]
     return generated_uuid, generated_private_key, generated_public_key, generated_short_id
 
@@ -208,30 +262,17 @@ def build_multi_singbox_config(entries: list[dict[str, Any]]) -> str:
     inbounds = []
     for entry in entries:
         node = entry["node"]
-        selected_reality_target = entry["selected_reality_target"]
-        node_id = str(node.get("node_id") or "node")
-        inbounds.append(
-            {
-                "type": "vless",
-                "tag": f"vless-reality-{node_id}",
-                "listen": "::",
-                "listen_port": int(node["listen_port"]),
-                "users": [{"uuid": entry["generated_uuid"], "flow": "xtls-rprx-vision"}],
-                "tls": {
-                    "enabled": True,
-                    "server_name": selected_reality_target,
-                    "reality": {
-                        "enabled": True,
-                        "handshake": {
-                            "server": selected_reality_target,
-                            "server_port": 443,
-                        },
-                        "private_key": entry["generated_private_key"],
-                        "short_id": [entry["generated_short_id"]],
-                    },
-                },
-            }
-        )
+        protocol_type = str(node.get("protocol_type") or "vless_reality_singbox")
+        handler = get_protocol(protocol_type)
+        if handler is None or not handler.supports_deploy:
+            raise DeployError("config", f"unsupported deploy protocol: {protocol_type}", f"unsupported deploy protocol: {protocol_type}")
+        materials = {
+            "generated_uuid": entry["generated_uuid"],
+            "generated_private_key": entry.get("generated_private_key") or "",
+            "generated_short_id": entry.get("generated_short_id") or "",
+            "selected_reality_target": entry["selected_reality_target"],
+        }
+        inbounds.append(handler.build_inbound(ProtocolBuildContext(node=node, materials=materials)))
     config = {"log": {"level": "info"}, "inbounds": inbounds, "outbounds": [{"type": "direct", "tag": "direct"}]}
     return json.dumps(config, ensure_ascii=False, indent=2)
 
@@ -318,28 +359,52 @@ def build_multi_node_meta(entries: list[dict[str, Any]]) -> str:
     nodes = []
     for entry in entries:
         node = entry["node"]
-        nodes.append(
-            {
-                "node_id": node["node_id"],
-                "protocol_type": node["protocol_type"],
-                "public_port": node["public_port"],
-                "listen_port": node["listen_port"],
-                "selected_reality_target": entry["selected_reality_target"],
-                "generated_uuid": entry["generated_uuid"],
-                "generated_public_key": entry["generated_public_key"],
-                "generated_short_id": entry["generated_short_id"],
-                "agent_token": node["agent_token"],
-            }
-        )
+        meta = {
+            "node_id": node["node_id"],
+            "protocol_type": node["protocol_type"],
+            "public_port": node["public_port"],
+            "listen_port": node["listen_port"],
+            "selected_reality_target": entry["selected_reality_target"],
+            "generated_uuid": entry["generated_uuid"],
+            "generated_public_key": entry.get("generated_public_key") or "",
+            "generated_short_id": entry.get("generated_short_id") or "",
+            "agent_token": node["agent_token"],
+        }
+        certificate_pin = str(entry.get("certificate_public_key_sha256") or "").strip()
+        if certificate_pin:
+            meta["certificate_public_key_sha256"] = certificate_pin
+        nodes.append(meta)
     payload = nodes[0].copy()
     payload["nodes"] = nodes
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
+def sync_remote_certificate_pin(executor: RemoteExecutor, node_id: str, certificate_pin: str) -> None:
+    if not certificate_pin:
+        return
+    script = f"""python3 - <<'PYEOF'
+import json
+from pathlib import Path
+meta_path = Path({REMOTE_META_FILE!r})
+meta = json.loads(meta_path.read_text())
+nodes = meta.get('nodes') or [meta]
+for item in nodes:
+    if item.get('node_id') == {node_id!r}:
+        item['generated_public_key'] = {certificate_pin!r}
+        item['certificate_public_key_sha256'] = {certificate_pin!r}
+if meta.get('node_id') == {node_id!r}:
+    meta['generated_public_key'] = {certificate_pin!r}
+    meta['certificate_public_key_sha256'] = {certificate_pin!r}
+meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2) + '\\n')
+PYEOF"""
+    executor.run(script, timeout=25)
+
+
 def build_agent_script(node: dict) -> str:
-    if not PUBLIC_BASE_URL:
+    public_base_url = os.getenv("NAT_WEBUI_PUBLIC_BASE_URL", "").rstrip("/")
+    if not public_base_url:
         raise DeployError("prepare", "缺少 NAT_WEBUI_PUBLIC_BASE_URL，无法生成 Agent 上报地址", "NAT_WEBUI_PUBLIC_BASE_URL is required")
-    report_url = f"{PUBLIC_BASE_URL}{AGENT_REPORT_PATH}"
+    report_url = f"{public_base_url}{AGENT_REPORT_PATH}"
     public_ip = json.dumps(node["ip"], ensure_ascii=False)
     script = """#!/bin/sh
 set -eu
@@ -374,6 +439,7 @@ for item in nodes:
         "protocol_type": item.get("protocol_type"),
         "generated_uuid": item.get("generated_uuid"),
         "generated_public_key": item.get("generated_public_key"),
+        "certificate_public_key_sha256": item.get("certificate_public_key_sha256"),
         "generated_short_id": item.get("generated_short_id"),
         "selected_reality_target": item.get("selected_reality_target"),
     }}
@@ -430,11 +496,11 @@ def build_remote_script(node: dict, *, singbox_config: str, node_meta: str, agen
         set -eu
         mkdir -p {shell_quote(REMOTE_BIN_DIR)} {shell_quote(REMOTE_AGENT_DIR)} {shell_quote(REMOTE_STATE_DIR)} {shell_quote(REMOTE_LOG_DIR)} {shell_quote(REMOTE_SINGBOX_DIR)} /tmp/natctl-singbox /etc/systemd/system
         if command -v apk >/dev/null 2>&1; then
-          apk add --no-cache curl ca-certificates tar gzip python3 coreutils iproute2 >/dev/null
+          apk add --no-cache curl ca-certificates tar gzip python3 coreutils iproute2 openssl >/dev/null
         elif command -v apt-get >/dev/null 2>&1; then
           export DEBIAN_FRONTEND=noninteractive
           apt-get update -y >/dev/null
-          apt-get install -y curl ca-certificates tar gzip python3 coreutils iproute2 cron >/dev/null
+          apt-get install -y curl ca-certificates tar gzip python3 coreutils iproute2 cron openssl >/dev/null
         else
           echo 'ERROR: unsupported package manager'
           exit 1
@@ -464,6 +530,49 @@ Path({REMOTE_AGENT_SCRIPT!r}).write_text({agent_script!r})
 Path('/etc/init.d/sing-box').write_text({openrc_script!r})
 Path('/etc/systemd/system/sing-box.service').write_text({systemd_script!r})
 PYEOF
+        if grep -Eq '"type": "(hysteria2|anytls)"' {shell_quote(REMOTE_SINGBOX_CONFIG)}; then
+          if ! command -v openssl >/dev/null 2>&1; then
+            echo 'ERROR: openssl unavailable for self-signed certificate'
+            exit 1
+          fi
+          python3 - <<'PYEOF_CERTS'
+import json
+import subprocess
+from pathlib import Path
+
+cfg = json.load(open({REMOTE_SINGBOX_CONFIG!r}))
+cert_specs = []
+for inbound in cfg.get('inbounds', []):
+    inbound_type = inbound.get('type')
+    if inbound_type not in {'hysteria2', 'anytls'}:
+        continue
+    tls = inbound.get('tls') or {{}}
+    cert_path = tls.get('certificate_path')
+    key_path = tls.get('key_path')
+    server_name = tls.get('server_name') or 'www.example.com'
+    if cert_path and key_path:
+        cert_specs.append((str(cert_path), str(key_path), str(server_name)))
+
+for cert_path, key_path, server_name in cert_specs:
+    cert_file = Path(cert_path)
+    key_file = Path(key_path)
+    need_generate = not cert_file.exists() or not key_file.exists() or cert_file.stat().st_size == 0 or key_file.stat().st_size == 0
+    if not need_generate:
+        subject = subprocess.run(['openssl', 'x509', '-in', cert_path, '-noout', '-subject'], text=True, capture_output=True)
+        san = subprocess.run(['openssl', 'x509', '-in', cert_path, '-noout', '-ext', 'subjectAltName'], text=True, capture_output=True)
+        need_generate = f'CN = {{server_name}}' not in subject.stdout or f'DNS:{{server_name}}' not in san.stdout
+    if not need_generate:
+        continue
+    help_text = subprocess.run(['openssl', 'req', '-help'], text=True, capture_output=True).stdout + subprocess.run(['openssl', 'req', '-help'], text=True, capture_output=True).stderr
+    if '-addext' in help_text:
+        subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', key_path, '-out', cert_path, '-days', '3650', '-subj', f'/CN={{server_name}}', '-addext', f'subjectAltName = DNS:{{server_name}}'], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        conf_path = '/tmp/natwebui-openssl.cnf'
+        Path(conf_path).write_text(f'''[req]\ndistinguished_name=req_distinguished_name\nx509_extensions=v3_req\nprompt=no\n[req_distinguished_name]\nCN={{server_name}}\n[v3_req]\nsubjectAltName=DNS:{{server_name}}\n''')
+        subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', key_path, '-out', cert_path, '-days', '3650', '-config', conf_path], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    key_file.chmod(0o600)
+PYEOF_CERTS
+        fi
         chmod +x {shell_quote(REMOTE_AGENT_SCRIPT)} /etc/init.d/sing-box
         if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
           systemctl stop sing-box >/dev/null 2>&1 || true
@@ -473,7 +582,14 @@ PYEOF
         fi
         sleep 1
         if command -v ss >/dev/null 2>&1; then
-          port_pids=$(ss -ltnp 2>/dev/null | awk '$4 ~ /:{int(node["listen_port"])}$/ {{print $0}}' | sed -En 's/.*pid=([0-9][0-9]*).*/\\1/p' | sort -u)
+          if grep -q '"type": "hysteria2"' {shell_quote(REMOTE_SINGBOX_CONFIG)}; then
+            ss_listen_args='-lunp'
+            ss_check_args='-lun'
+          else
+            ss_listen_args='-ltnp'
+            ss_check_args='-ltn'
+          fi
+          port_pids=$(ss $ss_listen_args 2>/dev/null | awk '$4 ~ /:{int(node["listen_port"])}$/ {{print $0}}' | sed -En 's/.*pid=([0-9][0-9]*).*/\\1/p' | sort -u)
           for pid in $port_pids; do
             cmdline=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)
             case "$cmdline" in
@@ -483,15 +599,15 @@ PYEOF
                 ;;
               *)
                 echo "ERROR: port {int(node["listen_port"])} is occupied by non-NAT-WebUI process: $pid $cmdline"
-                ss -ltnp 2>/dev/null | awk '$4 ~ /:{int(node["listen_port"])}$/ {{print $0}}' || true
+                ss $ss_listen_args 2>/dev/null | awk '$4 ~ /:{int(node["listen_port"])}$/ {{print $0}}' || true
                 exit 1
                 ;;
             esac
           done
           sleep 1
-          if ss -ltnp 2>/dev/null | awk '$4 ~ /:{int(node["listen_port"])}$/ {{print $0}}' | grep -q .; then
+          if ss $ss_listen_args 2>/dev/null | awk '$4 ~ /:{int(node["listen_port"])}$/ {{print $0}}' | grep -q .; then
             echo 'ERROR: sing-box listen port is still occupied after cleanup'
-            ss -ltnp 2>/dev/null | awk '$4 ~ /:{int(node["listen_port"])}$/ {{print $0}}' || true
+            ss $ss_listen_args 2>/dev/null | awk '$4 ~ /:{int(node["listen_port"])}$/ {{print $0}}' || true
             exit 1
           fi
         else
@@ -537,9 +653,9 @@ PYEOF
           fi
         fi
         if command -v ss >/dev/null 2>&1; then
-          if ! ss -ltn | awk '{{print $4}}' | grep -Eq '(^|:){int(node["listen_port"])}$'; then
+          if ! ss $ss_check_args | awk '{{print $4}}' | grep -Eq '(^|:){int(node["listen_port"])}$'; then
             echo 'ERROR: sing-box is not listening on port {int(node["listen_port"])}'
-            ss -ltnp 2>/dev/null || ss -ltn 2>/dev/null || true
+            ss $ss_listen_args 2>/dev/null || ss $ss_check_args 2>/dev/null || true
             exit 1
           fi
         fi
@@ -780,11 +896,39 @@ def run_multi_real_deploy(nodes: list[dict]) -> DeployResult:
     node_results = []
     for entry in entries:
         node = entry["node"]
-        generated_vless_link = build_vless_link(
+        handler = get_protocol(str(node.get("protocol_type") or "vless_reality_singbox"))
+        context = ProtocolBuildContext(
+            node=node,
+            materials={
+                "generated_uuid": entry["generated_uuid"],
+                "generated_public_key": entry.get("generated_public_key") or "",
+                "generated_short_id": entry.get("generated_short_id") or "",
+                "certificate_public_key_sha256": entry.get("certificate_public_key_sha256") or "",
+                "selected_reality_target": entry["selected_reality_target"],
+                "remark": vless_remark_for_node(node, allow_lookup=True),
+            },
+        )
+        protocol_type = str(node.get("protocol_type") or "vless_reality_singbox")
+        if handler and protocol_type == "hysteria2":
+            try:
+                certificate_output = executor.run("openssl x509 -in /etc/sing-box/hysteria2-cert.pem -pubkey -noout 2>/dev/null | openssl pkey -pubin -outform DER 2>/dev/null | openssl dgst -sha256 -binary 2>/dev/null | base64", timeout=25)
+                certificate_pin = next((line.strip() for line in certificate_output.splitlines() if line.strip() and not line.startswith("Warning:")), "")
+                certificate_sha_output = executor.run("openssl x509 -in /etc/sing-box/hysteria2-cert.pem -outform DER 2>/dev/null | openssl dgst -sha256 -binary 2>/dev/null | base64", timeout=25)
+                certificate_sha256 = next((line.strip() for line in certificate_sha_output.splitlines() if line.strip() and not line.startswith("Warning:")), "")
+            except Exception:
+                certificate_pin = ""
+                certificate_sha256 = ""
+            context.materials["certificate_public_key_sha256"] = certificate_pin
+            context.materials["certificate_sha256"] = certificate_sha256
+            entry["certificate_public_key_sha256"] = certificate_pin
+            entry["certificate_sha256"] = certificate_sha256
+            entry["generated_public_key"] = certificate_pin or entry.get("generated_public_key") or ""
+            sync_remote_certificate_pin(executor, str(node["node_id"]), certificate_pin)
+        generated_vless_link = handler.build_share_link(context) if handler else build_vless_link(
             node,
             generated_uuid=entry["generated_uuid"],
-            generated_public_key=entry["generated_public_key"],
-            generated_short_id=entry["generated_short_id"],
+            generated_public_key=entry.get("generated_public_key") or "",
+            generated_short_id=entry.get("generated_short_id") or "",
             selected_reality_target=entry["selected_reality_target"],
         )
         node_results.append(
@@ -793,7 +937,7 @@ def run_multi_real_deploy(nodes: list[dict]) -> DeployResult:
                 generated_vless_link=generated_vless_link,
                 generated_uuid=entry["generated_uuid"],
                 generated_private_key=entry["generated_private_key"],
-                generated_public_key=entry["generated_public_key"],
+                generated_public_key=entry.get("generated_public_key") or "",
                 generated_short_id=entry["generated_short_id"],
                 selected_reality_target=entry["selected_reality_target"],
             )
@@ -912,7 +1056,35 @@ def run_real_deploy(node: dict) -> DeployResult:
             """
         ).strip()
     else:
-        generated_vless_link = build_vless_link(
+        handler = get_protocol(str(node.get("protocol_type") or "vless_reality_singbox"))
+        context = ProtocolBuildContext(
+            node=node,
+            materials={
+                "generated_uuid": generated_uuid,
+                "generated_public_key": generated_public_key,
+                "generated_short_id": generated_short_id,
+                "selected_reality_target": selected_reality_target,
+                "remark": vless_remark_for_node(node, allow_lookup=True),
+            },
+        )
+        if handler and protocol_type in {"hysteria2", "anytls"}:
+            cert_file = "/etc/sing-box/anytls-cert.pem" if protocol_type == "anytls" else "/etc/sing-box/hysteria2-cert.pem"
+            try:
+                certificate_output = executor.run(f"openssl x509 -in {cert_file} -pubkey -noout 2>/dev/null | openssl pkey -pubin -outform DER 2>/dev/null | openssl dgst -sha256 -binary 2>/dev/null | base64", timeout=25)
+                certificate_pin = first_clean_output_line(certificate_output)
+                certificate_sha_output = executor.run(f"openssl x509 -in {cert_file} -outform DER 2>/dev/null | openssl dgst -sha256 -hex 2>/dev/null | awk '{{print $2}}' | sed 's/../&:/g; s/:$//'", timeout=25)
+                certificate_sha256 = first_clean_output_line(certificate_sha_output)
+                certificate_pem = extract_pem_certificate(executor.run(f"cat {cert_file}", timeout=25))
+            except Exception:
+                certificate_pin = ""
+                certificate_sha256 = ""
+                certificate_pem = ""
+            context.materials["certificate_public_key_sha256"] = certificate_pin
+            context.materials["certificate_sha256"] = certificate_sha256
+            context.materials["tls_certificate"] = certificate_pem
+            generated_public_key = certificate_pin or generated_public_key
+            sync_remote_certificate_pin(executor, str(node["node_id"]), certificate_pin)
+        generated_vless_link = handler.build_share_link(context) if handler else build_vless_link(
             node,
             generated_uuid=generated_uuid,
             generated_public_key=generated_public_key,
@@ -925,7 +1097,8 @@ def run_real_deploy(node: dict) -> DeployResult:
             目标节点：{node['ip']}:{node['ssh_port']}
             监听端口：{node['listen_port']}
             公网端口：{node['public_port']}
-            Reality 目标：{selected_reality_target}
+            协议：{protocol_type}
+            目标/SNI：{selected_reality_target}
             sing-box：{singbox_release['name']}
             """
         ).strip()

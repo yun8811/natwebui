@@ -211,7 +211,7 @@ def build_front_chain_config(config: dict[str, Any], *, chain_tag: str, chain_uu
     rules = route.setdefault("rules", [])
     rules[:] = [r for r in rules if r.get("outbound") != outbound_tag and r.get("action") != outbound_tag]
     inbound_tag = inbound.get("tag")
-    rule: dict[str, Any] = {"user": [chain_tag], "outbound": outbound_tag}
+    rule: dict[str, Any] = {"auth_user": [chain_tag], "outbound": outbound_tag}
     if inbound_tag:
         rule["inbound"] = [inbound_tag]
     rules.insert(0, rule)

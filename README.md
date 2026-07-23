@@ -96,7 +96,7 @@ tr '\0' '\n' < /proc/$(cat data/uvicorn.pid)/environ | grep '^NAT_WEBUI_' | sed 
 
 ### 按文件列出的脱敏位置
 
-- `.gitignore`：忽略 `.env`、`.env.*`、`data/*.db`、`logs/*.log`、`.venv/`、`.test-venv*/`，避免环境变量、数据库、日志、测试环境进入仓库。
+- `.gitignore`：忽略 `.env`、`.env.*`、`data/*`、`logs/*`、`.venv/`、`.test-venv*/`，只保留 `data/.gitkeep` 和 `logs/.gitkeep`，避免环境变量、数据库、缓存、日志、测试环境进入仓库。
 - `app/config.py`：只读取 `NAT_WEBUI_*` 环境变量，不保存生产密码；新增 `NAT_WEBUI_PUBLIC_BASE_URL` 作为 Agent 公网地址来源。
 - `app/deployer.py`：部署生成脚本不再写死真实上报域名，改用 `PUBLIC_BASE_URL + AGENT_REPORT_PATH`；生成的 UUID、Reality key、short id 只写入运行数据库，不写入源码。
 - `app/db.py`：展示/导出部署信息时对 `password`、`token`、`secret`、`private_key`、`vless://` 等字段做 `[REDACTED_*]` 处理。

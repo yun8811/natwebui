@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS nodes (
     cf_tunnel_token TEXT,
     ws_port INTEGER NOT NULL DEFAULT 8080,
     ws_path TEXT NOT NULL DEFAULT '/',
+    hy2_up_mbps INTEGER NOT NULL DEFAULT 200,
+    hy2_down_mbps INTEGER NOT NULL DEFAULT 1000,
     agent_token TEXT,
     status TEXT NOT NULL DEFAULT 'never_deployed',
     last_seen_at TEXT,
@@ -147,6 +149,8 @@ def migrate_db(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "nodes", "cf_tunnel_token", "TEXT")
     _ensure_column(conn, "nodes", "ws_port", "INTEGER NOT NULL DEFAULT 8080")
     _ensure_column(conn, "nodes", "ws_path", "TEXT NOT NULL DEFAULT '/'")
+    _ensure_column(conn, "nodes", "hy2_up_mbps", "INTEGER NOT NULL DEFAULT 200")
+    _ensure_column(conn, "nodes", "hy2_down_mbps", "INTEGER NOT NULL DEFAULT 1000")
 
 
 
@@ -231,7 +235,7 @@ def list_direct_vless_nodes_by_endpoint(ip: str, ssh_port: int) -> list[sqlite3.
         return conn.execute(
             """
             SELECT * FROM nodes
-            WHERE protocol_type = 'vless_reality_singbox'
+            WHERE protocol_type IN ('vless_reality_singbox', 'hysteria2')
               AND ip = ?
               AND ssh_port = ?
             ORDER BY created_at ASC, updated_at ASC
@@ -249,7 +253,7 @@ def find_direct_vless_port_conflict(
 ) -> sqlite3.Row | None:
     query = """
         SELECT * FROM nodes
-        WHERE protocol_type = 'vless_reality_singbox'
+        WHERE protocol_type IN ('vless_reality_singbox', 'hysteria2')
           AND ip = ?
           AND (public_port = ? OR listen_port = ?)
     """
@@ -281,7 +285,7 @@ def get_node(node_id: str) -> sqlite3.Row | None:
 
 
 def find_node_by_endpoint(ip: str, ssh_port: int, exclude_node_id: str | None = None) -> sqlite3.Row | None:
-    query = "SELECT * FROM nodes WHERE ip = ? AND ssh_port = ? AND protocol_type = 'vless_reality_singbox'"
+    query = "SELECT * FROM nodes WHERE ip = ? AND ssh_port = ? AND protocol_type IN ('vless_reality_singbox', 'hysteria2')"
     params: list[Any] = [ip, ssh_port]
     if exclude_node_id:
         query += " AND node_id != ?"
@@ -451,9 +455,10 @@ def create_node_record(payload: dict[str, Any]) -> str:
                 selected_reality_target, generated_uuid, generated_private_key,
                 generated_public_key, generated_short_id, last_vless_link,
                 cf_host, cf_tunnel_token, ws_port, ws_path,
+                hy2_up_mbps, hy2_down_mbps,
                 agent_token, status, last_seen_at, last_report_json,
                 created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 node_id,
@@ -478,6 +483,8 @@ def create_node_record(payload: dict[str, Any]) -> str:
                 payload.get("cf_tunnel_token"),
                 payload.get("ws_port") or 8080,
                 payload.get("ws_path") or "/",
+                payload.get("hy2_up_mbps") or 200,
+                payload.get("hy2_down_mbps") or 1000,
                 build_agent_token(),
                 "never_deployed",
                 None,
@@ -524,6 +531,8 @@ def update_node_record(node_id: str, payload: dict[str, Any]) -> None:
                 cf_tunnel_token = ?,
                 ws_port = ?,
                 ws_path = ?,
+                hy2_up_mbps = ?,
+                hy2_down_mbps = ?,
                 updated_at = ?
             WHERE node_id = ?
             """,
@@ -547,6 +556,8 @@ def update_node_record(node_id: str, payload: dict[str, Any]) -> None:
                 payload.get("cf_tunnel_token"),
                 payload.get("ws_port") or 8080,
                 payload.get("ws_path") or "/",
+                payload.get("hy2_up_mbps") or 200,
+                payload.get("hy2_down_mbps") or 1000,
                 now_iso(),
                 node_id,
             ),
@@ -721,9 +732,10 @@ def create_demo_node() -> None:
                 selected_reality_target, generated_uuid, generated_private_key,
                 generated_public_key, generated_short_id, last_vless_link,
                 cf_host, cf_tunnel_token, ws_port, ws_path,
+                hy2_up_mbps, hy2_down_mbps,
                 agent_token, status, last_seen_at, last_report_json,
                 created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 "node_demo_001",
@@ -748,6 +760,8 @@ def create_demo_node() -> None:
                 None,
                 8080,
                 "/",
+                200,
+                1000,
                 "demo-agent-token",
                 "never_deployed",
                 None,
@@ -967,7 +981,7 @@ def set_node_generated_fields(
 
 def mark_node_deployed_from_report(node_id: str, payload: dict[str, Any]) -> None:
     generated_uuid = str(payload.get("generated_uuid") or "").strip()
-    generated_public_key = str(payload.get("generated_public_key") or "").strip()
+    generated_public_key = str(payload.get("certificate_public_key_sha256") or payload.get("generated_public_key") or "").strip()
     generated_short_id = str(payload.get("generated_short_id") or "").strip()
     selected_reality_target = str(payload.get("selected_reality_target") or "").strip()
     public_ip = str(payload.get("public_ip") or "").strip()
@@ -982,21 +996,57 @@ def mark_node_deployed_from_report(node_id: str, payload: dict[str, Any]) -> Non
     except (TypeError, ValueError):
         return
 
+    def build_report_link() -> str:
+        if str(payload.get("protocol_type") or "") == "hysteria2":
+            import base64
+            from urllib.parse import quote, urlencode
+
+            pin_for_uri = generated_public_key
+            try:
+                decoded_pin = base64.b64decode(generated_public_key, validate=True)
+                if len(decoded_pin) == 32:
+                    pin_for_uri = decoded_pin.hex()
+            except Exception:
+                pass
+            query = urlencode({
+                "sni": selected_reality_target,
+                "obfs": "none",
+                "upmbps": "200",
+                "downmbps": "1000",
+                "pinSHA256": pin_for_uri,
+                "pinnedPeerCertSha256": pin_for_uri,
+            })
+            return f"hysteria2://{generated_uuid}@{public_ip}:{public_port}?{query}#{quote(node_name, safe='')}"
+        return (
+            f"vless://{generated_uuid}@{public_ip}:{public_port}"
+            f"?security=reality&sni={selected_reality_target}"
+            f"&pbk={generated_public_key}&sid={generated_short_id}"
+            f"&type=tcp&flow=xtls-rprx-vision#{node_name}"
+        )
+
     with get_conn() as conn:
-        node = conn.execute("SELECT name, last_vless_link FROM nodes WHERE node_id = ?", (node_id,)).fetchone()
+        node = conn.execute(
+            "SELECT name, generated_uuid, generated_public_key, generated_short_id, last_vless_link FROM nodes WHERE node_id = ?",
+            (node_id,),
+        ).fetchone()
         if not node:
             return
         node_name = node["name"] or node_id
         last_vless_link = node["last_vless_link"] or ""
         if not selected_reality_target:
             selected_reality_target = "www.example.com"
-        if not last_vless_link:
-            last_vless_link = (
-                f"vless://{generated_uuid}@{public_ip}:{public_port}"
-                f"?security=reality&sni={selected_reality_target}"
-                f"&pbk={generated_public_key}&sid={generated_short_id}"
-                f"&type=tcp&flow=xtls-rprx-vision#{node_name}"
-            )
+        generated_values_changed = any([
+            generated_uuid and generated_uuid != (node["generated_uuid"] or ""),
+            generated_public_key and generated_public_key != (node["generated_public_key"] or ""),
+            generated_short_id and generated_short_id != (node["generated_short_id"] or ""),
+        ])
+        link_values_stale = bool(last_vless_link) and any([
+            generated_uuid and generated_uuid not in last_vless_link,
+            generated_public_key and generated_public_key not in last_vless_link,
+            generated_short_id and generated_short_id not in last_vless_link,
+        ])
+        if not last_vless_link or generated_values_changed or link_values_stale:
+            last_vless_link = build_report_link()
         conn.execute(
             """
             UPDATE nodes

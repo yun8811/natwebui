@@ -409,6 +409,12 @@ button, .link-btn {
   display: block;
 }
 
+.sub-text-icon span[aria-hidden="true"] {
+  font-size: 11px;
+  line-height: 1;
+  letter-spacing: .02em;
+}
+
 .danger-btn {
   border: 1px solid rgba(255, 107, 122, 0.25);
   background: rgba(255, 107, 122, 0.12);
