@@ -106,6 +106,13 @@
         <textarea name="last_vless_link" rows="5" placeholder="vless://..." {% if mode == 'edit' %}readonly{% else %}required{% endif %}>{{ form_values.get('last_vless_link', '') }}</textarea>
       </label>
       <label>
+        <span>导入节点组</span>
+        <select name="import_group_id">
+          <option value="">未分组</option>
+          {% for group in import_groups %}<option value="{{ group.group_id }}" {% if form_values.get('import_group_id') == group.group_id %}selected{% endif %}>{{ group.name }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>
         <span>地区代码覆盖</span>
         <input type="text" name="manual_country_code" value="{{ form_values.get('manual_country_code', '') }}" maxlength="2" placeholder="node.example.com">
       </label>

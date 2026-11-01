@@ -105,6 +105,15 @@ CREATE TABLE IF NOT EXISTS node_tags (
 );
 """
 
+IMPORT_GROUP_SCHEMA = """
+CREATE TABLE IF NOT EXISTS import_groups (
+    group_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+"""
+
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -151,6 +160,7 @@ def migrate_db(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "nodes", "ws_path", "TEXT NOT NULL DEFAULT '/'")
     _ensure_column(conn, "nodes", "hy2_up_mbps", "INTEGER NOT NULL DEFAULT 200")
     _ensure_column(conn, "nodes", "hy2_down_mbps", "INTEGER NOT NULL DEFAULT 1000")
+    _ensure_column(conn, "nodes", "import_group_id", "TEXT")
 
 
 
@@ -162,7 +172,51 @@ def init_db() -> None:
         conn.execute(SETTINGS_SCHEMA)
         conn.execute(TAG_SCHEMA)
         conn.execute(NODE_TAG_SCHEMA)
+        conn.execute(IMPORT_GROUP_SCHEMA)
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_import_groups_name ON import_groups(name)")
         migrate_db(conn)
+        ts = now_iso()
+        conn.execute(
+            "INSERT OR IGNORE INTO import_groups (group_id, name, created_at, updated_at) "
+            "SELECT 'import_default', '默认组', ?, ? WHERE EXISTS "
+            "(SELECT 1 FROM nodes WHERE protocol_type = 'imported_vless')",
+            (ts, ts),
+        )
+        conn.execute(
+            "UPDATE nodes SET import_group_id = 'import_default' "
+            "WHERE protocol_type = 'imported_vless' AND import_group_id IS NULL "
+            "AND EXISTS (SELECT 1 FROM import_groups WHERE group_id = 'import_default')"
+        )
+
+
+
+def list_import_groups() -> list[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute("SELECT * FROM import_groups ORDER BY name COLLATE NOCASE, created_at").fetchall()
+
+
+
+def create_import_group(name: str) -> str:
+    group_id = f"import_group_{uuid.uuid4().hex[:12]}"
+    clean_name = name.strip()[:40]
+    if not clean_name:
+        raise ValueError("分组名称不能为空")
+    ts = now_iso()
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO import_groups (group_id, name, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            (group_id, clean_name, ts, ts),
+        )
+    return group_id
+
+
+
+def delete_import_group(group_id: str) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM import_groups WHERE group_id = ?", (group_id,))
+        if cur.rowcount:
+            conn.execute("UPDATE nodes SET import_group_id = NULL WHERE import_group_id = ?", (group_id,))
+        return cur.rowcount > 0
 
 
 
@@ -173,8 +227,10 @@ def list_nodes() -> list[sqlite3.Row]:
             SELECT
                 nodes.*,
                 front.name AS front_node_name,
-                backend.name AS backend_node_name
+                backend.name AS backend_node_name,
+                import_groups.name AS import_group_name
             FROM nodes
+            LEFT JOIN import_groups ON nodes.import_group_id = import_groups.group_id
             LEFT JOIN nodes AS front ON nodes.front_node_id = front.node_id
             LEFT JOIN nodes AS backend ON nodes.backend_node_id = backend.node_id
             ORDER BY nodes.updated_at DESC, nodes.created_at DESC
@@ -450,7 +506,7 @@ def create_node_record(payload: dict[str, Any]) -> str:
             """
             INSERT INTO nodes (
                 node_id, name, ip, ssh_port, ssh_user, ssh_password,
-                protocol_type, front_node_id, backend_node_id, chain_mode,
+                protocol_type, front_node_id, backend_node_id, chain_mode, import_group_id,
                 public_port, listen_port,
                 selected_reality_target, generated_uuid, generated_private_key,
                 generated_public_key, generated_short_id, last_vless_link,
@@ -458,7 +514,7 @@ def create_node_record(payload: dict[str, Any]) -> str:
                 hy2_up_mbps, hy2_down_mbps,
                 agent_token, status, last_seen_at, last_report_json,
                 created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 node_id,
@@ -471,6 +527,7 @@ def create_node_record(payload: dict[str, Any]) -> str:
                 payload.get("front_node_id"),
                 payload.get("backend_node_id"),
                 payload.get("chain_mode"),
+                payload.get("import_group_id"),
                 payload["public_port"],
                 payload["listen_port"],
                 payload.get("selected_reality_target"),
@@ -521,6 +578,7 @@ def update_node_record(node_id: str, payload: dict[str, Any]) -> None:
                 front_node_id = ?,
                 backend_node_id = ?,
                 chain_mode = ?,
+                import_group_id = ?,
                 public_port = ?,
                 listen_port = ?,
                 manual_country_code = ?,
@@ -546,6 +604,7 @@ def update_node_record(node_id: str, payload: dict[str, Any]) -> None:
                 payload.get("front_node_id"),
                 payload.get("backend_node_id"),
                 payload.get("chain_mode"),
+                payload.get("import_group_id"),
                 payload["public_port"],
                 payload["listen_port"],
                 payload.get("manual_country_code"),

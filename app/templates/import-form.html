@@ -13,8 +13,14 @@
   <p>每行粘贴一个 VLESS 链接，以 <code>#</code> 开头的行会被忽略。</p>
 
   <form method="post" action="/nodes/import">
+    <label style="display:block;margin:12px 0;">导入节点组
+      <select name="import_group_id">
+        <option value="" {% if not selected_group_id %}selected{% endif %}>未分组</option>
+        {% for group in import_groups %}<option value="{{ group.group_id }}" {% if selected_group_id == group.group_id %}selected{% endif %}>{{ group.name }}</option>{% endfor %}
+      </select>
+    </label>
     <textarea name="links" rows="12" style="width:100%;font-family:monospace;font-size:13px;border:1px solid #ccc;border-radius:6px;padding:10px;" placeholder="vless://uuid@203.0.113.10:443?security=reality&...&#node-name
-vless://uuid@203.0.113.11:8443?encryption=none&...&#another-node"></textarea>
+vless://uuid@203.0.113.11:8443?encryption=none&...&#another-node">{{ submitted_links|default('') }}</textarea>
     <button class="link-btn" type="submit" style="margin-top:12px;">批量导入</button>
   </form>
 

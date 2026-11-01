@@ -205,11 +205,24 @@
         <div class="tab-title">导入节点</div>
         <div class="panel-subtitle">外部 VLESS 链接导入，无需 VPS SSH 凭据。</div>
       </div>
-      <div>
+      <div class="toolbar-create-actions">
+        <form method="post" action="/import-groups" style="display:flex;gap:6px;margin:0;">
+          <input name="name" maxlength="40" required placeholder="新建分组名称" aria-label="新建导入节点组名称">
+          <button class="link-btn" type="submit">新建分组</button>
+        </form>
         <a class="link-btn" href="/nodes/import">批量导入</a>
+        <a class="link-btn" href="/nodes/new-import">单节点导入</a>
       </div>
     </div>
-    {{ node_table(import_nodes, '暂无导入节点。') }}
+    {% for group in import_groups %}
+    <div class="tab-panel-head" style="margin-top:14px;"><div class="tab-title">{{ group.name }} <span>{{ group.nodes|length }}</span></div><div class="toolbar-create-actions">
+      {{ subscription_buttons(group.subscription_urls, group.name, group.subscription_scope) }}
+      <a class="link-btn" href="/nodes/import?group_id={{ group.group_id }}">向此组批量导入</a>
+      <form method="post" action="/import-groups/{{ group.group_id }}/delete" onsubmit="return confirm('删除分组后，组内节点会变为未分组。确定继续？');"><button class="icon-btn danger-btn" type="submit" title="删除分组" aria-label="删除分组">×</button></form>
+    </div></div>
+    {{ node_table(group.nodes, '此分组暂无节点。') }}
+    {% endfor %}
+    {% if ungrouped_import_nodes %}<div class="tab-panel-head" style="margin-top:14px;"><div class="tab-title">未分组 <span>{{ ungrouped_import_nodes|length }}</span></div></div>{{ node_table(ungrouped_import_nodes, '暂无未分组节点。') }}{% endif %}
   </div>
 </section>
 

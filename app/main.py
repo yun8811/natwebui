@@ -25,6 +25,9 @@ from .db import (
     create_demo_node,
     create_deployment_record,
     create_node_record,
+    create_import_group,
+    delete_import_group,
+    list_import_groups,
     delete_node_record,
     delete_tag,
     find_direct_vless_port_conflict,
@@ -188,6 +191,7 @@ def is_chain_backend_protocol(protocol_type: object) -> bool:
 def node_to_form_values(node) -> dict[str, object]:
     return {
         "name": node["name"],
+        "import_group_id": node["import_group_id"] or "",
         "ip": node["ip"],
         "ssh_port": node["ssh_port"],
         "ssh_user": node["ssh_user"],
@@ -352,7 +356,10 @@ def clean_node_form(form: dict[str, str], *, editing_node_id: str | None = None)
                 errors.append("国家/地区代码请填写两位字母，例如 JP / HK / US")
             cleaned["manual_country_code"] = manual_country_code or None
             cleaned["manual_region_label"] = manual_region_label or None
+            cleaned["import_group_id"] = str(form.get("import_group_id") or "").strip() or None
             cleaned["protocol_type"] = PROTOCOL_IMPORT
+            if cleaned["import_group_id"] and not any(group["group_id"] == cleaned["import_group_id"] for group in list_import_groups()):
+                errors.append("请选择有效的导入节点组")
             if not cleaned["name"]:
                 errors.append("name 不能为空")
         return cleaned, errors
@@ -373,6 +380,9 @@ def clean_node_form(form: dict[str, str], *, editing_node_id: str | None = None)
             if optional_key in required_fields:
                 required_fields.remove(optional_key)
     if is_import_protocol(protocol_type):
+        cleaned["import_group_id"] = str(form.get("import_group_id") or "").strip() or None
+        if cleaned["import_group_id"] and not any(group["group_id"] == cleaned["import_group_id"] for group in list_import_groups()):
+            errors.append("请选择有效的导入节点组")
         for optional_key in ["ip", "ssh_port", "ssh_user", "ssh_password", "public_port", "listen_port"]:
             if optional_key in required_fields:
                 required_fields.remove(optional_key)
@@ -467,6 +477,9 @@ def clean_node_form(form: dict[str, str], *, editing_node_id: str | None = None)
         cleaned["public_port"] = 443
         cleaned["listen_port"] = cleaned["ws_port"]
     elif is_import_protocol(protocol_type):
+        cleaned["import_group_id"] = str(form.get("import_group_id") or "").strip() or None
+        if cleaned["import_group_id"] and not any(group["group_id"] == cleaned["import_group_id"] for group in list_import_groups()):
+            errors.append("请选择有效的导入节点组")
         link_info, link_errors = parse_imported_vless_link(str(form.get("last_vless_link") or ""))
         errors.extend(link_errors)
         if link_info:
@@ -565,6 +578,7 @@ def render_node_form(
             "direct_nodes": front_nodes,
             "front_nodes": front_nodes,
             "backend_nodes": backend_nodes,
+            "import_groups": list_import_groups(),
             "protocol_direct": PROTOCOL_DIRECT,
             "protocol_chain": PROTOCOL_CHAIN,
             "protocol_tunnel": PROTOCOL_TUNNEL,
@@ -676,6 +690,10 @@ def normalize_subscription_scope(scope: str | None) -> str:
         "imported_vless": "imported",
     }
     scope = aliases.get(scope, scope)
+    if scope.startswith("import_group:"):
+        group_id = scope.split(":", 1)[1]
+        if any(group["group_id"] == group_id for group in list_import_groups()):
+            return scope
     return scope if scope in SUBSCRIPTION_SCOPES else "all"
 
 
@@ -788,8 +806,12 @@ def _hysteria2_link_for_client(link: str, client: str) -> str:
 
 
 def build_subscription_payload(scope: str = "all", client: str = "default") -> str:
-    protocol_type = SUBSCRIPTION_SCOPES[normalize_subscription_scope(scope)]
+    normalized_scope = normalize_subscription_scope(scope)
+    protocol_type = SUBSCRIPTION_SCOPES.get(normalized_scope)
     nodes = list_subscribable_nodes(protocol_type)
+    if normalized_scope.startswith("import_group:"):
+        group_id = normalized_scope.split(":", 1)[1]
+        nodes = [node for node in nodes if node["import_group_id"] == group_id]
     all_nodes = list_nodes()
     node_by_id = {node["node_id"]: node for node in all_nodes}
     links = []
@@ -910,8 +932,12 @@ def _anytls_link_to_clash_proxy(link: str) -> dict[str, object] | None:
 
 
 def build_clash_subscription_payload(scope: str = "all") -> str:
-    protocol_type = SUBSCRIPTION_SCOPES[normalize_subscription_scope(scope)]
+    normalized_scope = normalize_subscription_scope(scope)
+    protocol_type = SUBSCRIPTION_SCOPES.get(normalized_scope)
     nodes = list_subscribable_nodes(protocol_type)
+    if normalized_scope.startswith("import_group:"):
+        group_id = normalized_scope.split(":", 1)[1]
+        nodes = [node for node in nodes if node["import_group_id"] == group_id]
     all_nodes = list_nodes()
     node_by_id = {node["node_id"]: node for node in all_nodes}
     proxies = []
@@ -952,6 +978,23 @@ def build_clash_subscription_payload(scope: str = "all") -> str:
 
 
 
+@app.post("/import-groups")
+@login_required
+async def import_group_create_action(request: Request, name: str = Form("")):
+    try:
+        create_import_group(name)
+    except Exception as exc:
+        return PlainTextResponse(str(exc), status_code=400)
+    return RedirectResponse(url="/nodes#imported", status_code=303)
+
+
+@app.post("/import-groups/{group_id}/delete")
+@login_required
+async def import_group_delete_action(request: Request, group_id: str):
+    delete_import_group(group_id)
+    return RedirectResponse(url="/nodes#imported", status_code=303)
+
+
 @app.get("/nodes", response_class=HTMLResponse)
 @login_required
 async def nodes_page(request: Request):
@@ -984,6 +1027,8 @@ async def nodes_page(request: Request):
             "masked_entry_text": masked_entry_text,
             "protocol_type": node["protocol_type"],
             "protocol_label": protocol_label(node["protocol_type"]),
+            "import_group_id": node["import_group_id"],
+            "import_group_name": node["import_group_name"],
             "region_flag": region.get("flag", ""),
             "region_flag_codes": region.get("flag_codes", []),
             "region_badge": region.get("badge", "") or region.get("code", ""),
@@ -1003,6 +1048,18 @@ async def nodes_page(request: Request):
     direct_nodes = [node for node in nodes if node["protocol_type"] in {PROTOCOL_DIRECT, PROTOCOL_HYSTERIA2, PROTOCOL_ANYTLS, PROTOCOL_TUNNEL}]
     chain_nodes = [node for node in nodes if node["is_chain"]]
     import_nodes = [node for node in nodes if node["protocol_type"] == PROTOCOL_IMPORT]
+    import_groups = []
+    for row in list_import_groups():
+        group = dict(row)
+        group["nodes"] = [node for node in import_nodes if node.get("import_group_id") == group["group_id"]]
+        group["subscription_scope"] = f"import_group:{group['group_id']}"
+        group["subscription_urls"] = {
+            "v2rayng": build_subscription_url(request, group["subscription_scope"], client="xray"),
+            "singbox": build_subscription_url(request, group["subscription_scope"]),
+            "clash": build_clash_subscription_url(request, group["subscription_scope"]),
+        }
+        import_groups.append(group)
+    ungrouped_import_nodes = [node for node in import_nodes if not node.get("import_group_id")]
     subscription_urls = {
         "all": {"v2rayng": build_subscription_url(request, client="xray"), "singbox": build_subscription_url(request), "clash": build_clash_subscription_url(request)},
         "direct": {"v2rayng": build_subscription_url(request, "direct", client="xray"), "singbox": build_subscription_url(request, "direct"), "clash": build_clash_subscription_url(request, "direct")},
@@ -1019,6 +1076,8 @@ async def nodes_page(request: Request):
             "direct_nodes": direct_nodes,
             "chain_nodes": chain_nodes,
             "import_nodes": import_nodes,
+            "import_groups": import_groups,
+            "ungrouped_import_nodes": ungrouped_import_nodes,
             "subscription_url": subscription_urls["all"]["v2rayng"],
             "clash_subscription_url": subscription_urls["all"]["clash"],
             "subscription_urls": subscription_urls,
@@ -1120,6 +1179,8 @@ async def import_nodes_page(request: Request):
         {
             "request": request,
             "title": "导入节点",
+            "import_groups": list_import_groups(),
+            "selected_group_id": request.query_params.get("group_id", ""),
         },
     )
 
@@ -1130,6 +1191,7 @@ async def import_node_create_page(request: Request):
     values = default_form_values()
     values["protocol_type"] = PROTOCOL_IMPORT
     values["ssh_user"] = "imported"
+    values["import_group_id"] = request.query_params.get("group_id", "")
     return render_node_form(
         request,
         title="导入节点",
@@ -1163,6 +1225,7 @@ async def node_create_submit(
     manual_country_code: str = Form(""),
     manual_region_label: str = Form(""),
     last_vless_link: str = Form(""),
+    import_group_id: str = Form(""),
 ):
     payload, errors = clean_node_form(
         {
@@ -1186,6 +1249,7 @@ async def node_create_submit(
             "manual_country_code": manual_country_code,
             "manual_region_label": manual_region_label,
             "last_vless_link": last_vless_link,
+            "import_group_id": import_group_id,
         }
     )
 
@@ -1197,6 +1261,9 @@ async def node_create_submit(
         )
         if conflict:
             errors.append("已存在相同 IP + 公网端口或监听端口 的节点记录")
+
+    if payload.get("import_group_id") and not any(group["group_id"] == payload["import_group_id"] for group in list_import_groups()):
+        errors.append("请选择有效的导入节点组")
 
     if errors:
         return render_node_form(
@@ -1216,6 +1283,9 @@ async def node_create_submit(
 @login_required
 async def import_nodes_action(request: Request):
     form = await request.form()
+    group_id = str(form.get("import_group_id") or "").strip() or None
+    if group_id and not any(group["group_id"] == group_id for group in list_import_groups()):
+        return PlainTextResponse("请选择有效的导入节点组", status_code=400)
     text = str(form.get("links") or "").strip()
     if not text:
         return PlainTextResponse("请输入至少一个 VLESS 链接", status_code=400)
@@ -1241,6 +1311,7 @@ async def import_nodes_action(request: Request):
             "public_port": "",
             "listen_port": "",
             "protocol_type": PROTOCOL_IMPORT,
+            "import_group_id": group_id,
             "last_vless_link": line,
             "manual_country_code": "",
             "manual_region_label": "",
@@ -1263,6 +1334,9 @@ async def import_nodes_action(request: Request):
         {
             "request": request,
             "title": "导入节点",
+            "import_groups": list_import_groups(),
+            "selected_group_id": group_id or "",
+            "submitted_links": text,
             "result": {
                 "created": created_count,
                 "skipped": skipped_count,
@@ -1280,6 +1354,7 @@ async def import_node_create_submit(
     last_vless_link: str = Form(""),
     manual_country_code: str = Form(""),
     manual_region_label: str = Form(""),
+    import_group_id: str = Form(""),
 ):
     payload, errors = clean_node_form(
         {
@@ -1294,6 +1369,7 @@ async def import_node_create_submit(
             "last_vless_link": last_vless_link,
             "manual_country_code": manual_country_code,
             "manual_region_label": manual_region_label,
+            "import_group_id": import_group_id,
         }
     )
     if errors:
@@ -1564,6 +1640,7 @@ async def node_edit_submit(
     manual_country_code: str = Form(""),
     manual_region_label: str = Form(""),
     last_vless_link: str = Form(""),
+    import_group_id: str = Form(""),
 ):
     node = get_node(node_id)
     if not node:
@@ -1596,6 +1673,7 @@ async def node_edit_submit(
             "manual_country_code": manual_country_code,
             "manual_region_label": manual_region_label,
             "last_vless_link": last_vless_link,
+            "import_group_id": import_group_id,
         },
         editing_node_id=node_id,
     )

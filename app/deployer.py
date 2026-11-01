@@ -659,13 +659,21 @@ PYEOF_CERTS
             exit 1
           fi
         fi
-        if command -v crontab >/dev/null 2>&1; then
-          (crontab -l 2>/dev/null | grep -v 'NAT-WEBUI-AGENT' | grep -v '/opt/natctl/agent/report.sh'; \
-            echo '# BEGIN NAT-WEBUI-AGENT'; \
-            echo {shell_quote(cron_block)}; \
-            echo '# END NAT-WEBUI-AGENT') | crontab -
-        else
-          echo 'WARN: crontab unavailable, run one-shot agent report only'
+        if ! command -v crontab >/dev/null 2>&1; then
+          echo 'ERROR: crontab is unavailable; cannot install Agent report schedule'
+          exit 1
+        fi
+        if ! (crontab -l 2>/dev/null | grep -v 'NAT-WEBUI-AGENT' | grep -v '/opt/natctl/agent/report.sh'; \
+          echo '# BEGIN NAT-WEBUI-AGENT'; \
+          echo {shell_quote(cron_block)}; \
+          echo '# END NAT-WEBUI-AGENT') | crontab -; then
+          echo 'ERROR: failed to install Agent report schedule'
+          exit 1
+        fi
+        if ! crontab -l 2>/dev/null | grep -Fqx {shell_quote(cron_block)}; then
+          echo 'ERROR: Agent report schedule verification failed'
+          crontab -l 2>/dev/null || true
+          exit 1
         fi
         {shell_quote(REMOTE_AGENT_SCRIPT)} >/opt/natctl/logs/agent-once.log 2>&1 || true
         echo 'OK: deploy finished'
@@ -805,10 +813,22 @@ PYEOF
           /usr/local/bin/sing-box run -c /etc/sing-box/config.json >{shell_quote(REMOTE_LOG_DIR)}/sing-box.log 2>&1 &
           /usr/local/bin/cloudflared tunnel run --token-file /etc/cloudflared/token >{shell_quote(REMOTE_LOG_DIR)}/cloudflared.log 2>&1 &
         fi
-        (crontab -l 2>/dev/null | grep -v 'NAT-WEBUI-AGENT' | grep -v '/opt/natctl/agent/report.sh'; \
+        if ! command -v crontab >/dev/null 2>&1; then
+          echo 'ERROR: crontab is unavailable; cannot install Agent report schedule'
+          exit 1
+        fi
+        if ! (crontab -l 2>/dev/null | grep -v 'NAT-WEBUI-AGENT' | grep -v '/opt/natctl/agent/report.sh'; \
           echo '# BEGIN NAT-WEBUI-AGENT'; \
           echo {shell_quote(cron_block)}; \
-          echo '# END NAT-WEBUI-AGENT') | crontab - 2>/dev/null || true
+          echo '# END NAT-WEBUI-AGENT') | crontab - 2>/dev/null; then
+          echo 'ERROR: failed to install Agent report schedule'
+          exit 1
+        fi
+        if ! crontab -l 2>/dev/null | grep -Fqx {shell_quote(cron_block)}; then
+          echo 'ERROR: Agent report schedule verification failed'
+          crontab -l 2>/dev/null || true
+          exit 1
+        fi
         if command -v ss >/dev/null 2>&1; then
           ss -ltn | grep -q ":{listen_port} "
         elif command -v netstat >/dev/null 2>&1; then

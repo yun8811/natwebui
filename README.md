@@ -30,6 +30,7 @@ GitHub 仓库：`yun8811/natwebui`
 - 节点类型页签：`直连` / `链式` / `仅导入`
 - 链式节点：前置 sing-box Reality inbound -> 后端 VLESS Reality outbound
 - 仅导入节点：直接粘贴已有 VLESS 链接，可进入独立订阅，也可作为链式后端/落地
+- 导入节点分组：支持创建/删除分组、按组导入与筛选，并生成分组订阅
 
 ## 运行方式
 
@@ -160,7 +161,7 @@ tr '\0' '\n' < /proc/$(cat data/uvicorn.pid)/environ | grep '^NAT_WEBUI_' | sed 
   - 链式节点部署逻辑
   - 负责修改前置机 sing-box 配置：添加链式用户、后端 outbound、route rule
   - 常改位置：后端协议支持、outbound 生成、sing-box route 规则
-  - 重要：sing-box 路由规则字段应使用 `user`，不是 `auth_user`
+  - 重要：VLESS 入站用户路由规则应使用 `auth_user`，不是 `user`
 
 - `app/link_labels.py`
   - VLESS 链接 fragment / 国旗 / 节点名备注生成
@@ -440,9 +441,10 @@ git push origin main
 
 - 直连节点支持同一 VPS 多节点合并为多个 inbound
 - 导入节点与批量导入入口已拆分，`/nodes#imported` 等页签返回已修复
+- 导入节点支持按分组管理，删除分组时保留节点并转为未分组
 - Agent 上报地址改为通过 `NAT_WEBUI_PUBLIC_BASE_URL` 配置，不在源码写死公网域名
 - GitHub 上传前已补充脱敏清单并清理残留真实/疑似真实节点标记
-- 测试：`32 passed`
+- 测试：`50 passed`
 
 ## 下次接手最短路径
 
