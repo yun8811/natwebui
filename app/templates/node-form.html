@@ -107,10 +107,10 @@
       </label>
       <label>
         <span>导入节点组</span>
-        <select name="import_group_id">
-          <option value="">未分组</option>
-          {% for group in import_groups %}<option value="{{ group.group_id }}" {% if form_values.get('import_group_id') == group.group_id %}selected{% endif %}>{{ group.name }}</option>{% endfor %}
-        </select>
+        <div class="checkbox-list">
+          <label><input type="checkbox" name="import_group_ids" value="" {% if not form_values.get('import_group_ids') %}checked{% endif %}> 未分组</label>
+          {% for group in import_groups %}<label><input type="checkbox" name="import_group_ids" value="{{ group.group_id }}" {% if group.group_id in form_values.get('import_group_ids', []) %}checked{% endif %}> {{ group.name }}</label>{% endfor %}
+        </div>
       </label>
       <label>
         <span>地区代码覆盖</span>

@@ -51,6 +51,8 @@ from .db import (
     mark_node_deployed_from_report,
     rename_node_record,
     set_node_tags,
+    set_node_import_group_ids,
+    get_node_import_group_ids,
     create_tag,
     update_node_record,
     validate_subscription_token,
@@ -192,6 +194,7 @@ def node_to_form_values(node) -> dict[str, object]:
     return {
         "name": node["name"],
         "import_group_id": node["import_group_id"] or "",
+        "import_group_ids": get_node_import_group_ids(str(node["node_id"])),
         "ip": node["ip"],
         "ssh_port": node["ssh_port"],
         "ssh_user": node["ssh_user"],
@@ -356,9 +359,11 @@ def clean_node_form(form: dict[str, str], *, editing_node_id: str | None = None)
                 errors.append("国家/地区代码请填写两位字母，例如 JP / HK / US")
             cleaned["manual_country_code"] = manual_country_code or None
             cleaned["manual_region_label"] = manual_region_label or None
-            cleaned["import_group_id"] = str(form.get("import_group_id") or "").strip() or None
+            cleaned["import_group_ids"] = [str(value).strip() for value in form.get("import_group_ids", []) if str(value).strip()]
+            cleaned["import_group_id"] = cleaned["import_group_ids"][0] if cleaned["import_group_ids"] else None
             cleaned["protocol_type"] = PROTOCOL_IMPORT
-            if cleaned["import_group_id"] and not any(group["group_id"] == cleaned["import_group_id"] for group in list_import_groups()):
+            valid_group_ids = {group["group_id"] for group in list_import_groups()}
+            if any(group_id not in valid_group_ids for group_id in cleaned["import_group_ids"]):
                 errors.append("请选择有效的导入节点组")
             if not cleaned["name"]:
                 errors.append("name 不能为空")
@@ -380,8 +385,13 @@ def clean_node_form(form: dict[str, str], *, editing_node_id: str | None = None)
             if optional_key in required_fields:
                 required_fields.remove(optional_key)
     if is_import_protocol(protocol_type):
-        cleaned["import_group_id"] = str(form.get("import_group_id") or "").strip() or None
-        if cleaned["import_group_id"] and not any(group["group_id"] == cleaned["import_group_id"] for group in list_import_groups()):
+        raw_group_ids = form.get("import_group_ids", [])
+        if isinstance(raw_group_ids, str):
+            raw_group_ids = [raw_group_ids]
+        cleaned["import_group_ids"] = [str(value).strip() for value in raw_group_ids if str(value).strip()]
+        cleaned["import_group_id"] = cleaned["import_group_ids"][0] if cleaned["import_group_ids"] else None
+        valid_group_ids = {group["group_id"] for group in list_import_groups()}
+        if any(group_id not in valid_group_ids for group_id in cleaned["import_group_ids"]):
             errors.append("请选择有效的导入节点组")
         for optional_key in ["ip", "ssh_port", "ssh_user", "ssh_password", "public_port", "listen_port"]:
             if optional_key in required_fields:
@@ -477,8 +487,13 @@ def clean_node_form(form: dict[str, str], *, editing_node_id: str | None = None)
         cleaned["public_port"] = 443
         cleaned["listen_port"] = cleaned["ws_port"]
     elif is_import_protocol(protocol_type):
-        cleaned["import_group_id"] = str(form.get("import_group_id") or "").strip() or None
-        if cleaned["import_group_id"] and not any(group["group_id"] == cleaned["import_group_id"] for group in list_import_groups()):
+        raw_group_ids = form.get("import_group_ids", [])
+        if isinstance(raw_group_ids, str):
+            raw_group_ids = [raw_group_ids]
+        cleaned["import_group_ids"] = [str(value).strip() for value in raw_group_ids if str(value).strip()]
+        cleaned["import_group_id"] = cleaned["import_group_ids"][0] if cleaned["import_group_ids"] else None
+        valid_group_ids = {group["group_id"] for group in list_import_groups()}
+        if any(group_id not in valid_group_ids for group_id in cleaned["import_group_ids"]):
             errors.append("请选择有效的导入节点组")
         link_info, link_errors = parse_imported_vless_link(str(form.get("last_vless_link") or ""))
         errors.extend(link_errors)
@@ -811,7 +826,7 @@ def build_subscription_payload(scope: str = "all", client: str = "default") -> s
     nodes = list_subscribable_nodes(protocol_type)
     if normalized_scope.startswith("import_group:"):
         group_id = normalized_scope.split(":", 1)[1]
-        nodes = [node for node in nodes if node["import_group_id"] == group_id]
+        nodes = [node for node in nodes if group_id in (str(node["import_group_ids"] or "").split(",") or [str(node["import_group_id"] or "")])]
     all_nodes = list_nodes()
     node_by_id = {node["node_id"]: node for node in all_nodes}
     links = []
@@ -937,7 +952,7 @@ def build_clash_subscription_payload(scope: str = "all") -> str:
     nodes = list_subscribable_nodes(protocol_type)
     if normalized_scope.startswith("import_group:"):
         group_id = normalized_scope.split(":", 1)[1]
-        nodes = [node for node in nodes if node["import_group_id"] == group_id]
+        nodes = [node for node in nodes if group_id in (str(node["import_group_ids"] or "").split(",") or [str(node["import_group_id"] or "")])]
     all_nodes = list_nodes()
     node_by_id = {node["node_id"]: node for node in all_nodes}
     proxies = []
@@ -1028,6 +1043,7 @@ async def nodes_page(request: Request):
             "protocol_type": node["protocol_type"],
             "protocol_label": protocol_label(node["protocol_type"]),
             "import_group_id": node["import_group_id"],
+            "import_group_ids": [value for value in str(node["import_group_ids"] or "").split(",") if value],
             "import_group_name": node["import_group_name"],
             "region_flag": region.get("flag", ""),
             "region_flag_codes": region.get("flag_codes", []),
@@ -1051,7 +1067,7 @@ async def nodes_page(request: Request):
     import_groups = []
     for row in list_import_groups():
         group = dict(row)
-        group["nodes"] = [node for node in import_nodes if node.get("import_group_id") == group["group_id"]]
+        group["nodes"] = [node for node in import_nodes if group["group_id"] in node.get("import_group_ids", [])]
         group["subscription_scope"] = f"import_group:{group['group_id']}"
         group["subscription_urls"] = {
             "v2rayng": build_subscription_url(request, group["subscription_scope"], client="xray"),
@@ -1059,7 +1075,7 @@ async def nodes_page(request: Request):
             "clash": build_clash_subscription_url(request, group["subscription_scope"]),
         }
         import_groups.append(group)
-    ungrouped_import_nodes = [node for node in import_nodes if not node.get("import_group_id")]
+    ungrouped_import_nodes = [node for node in import_nodes if not node.get("import_group_ids")]
     subscription_urls = {
         "all": {"v2rayng": build_subscription_url(request, client="xray"), "singbox": build_subscription_url(request), "clash": build_clash_subscription_url(request)},
         "direct": {"v2rayng": build_subscription_url(request, "direct", client="xray"), "singbox": build_subscription_url(request, "direct"), "clash": build_clash_subscription_url(request, "direct")},
@@ -1181,6 +1197,7 @@ async def import_nodes_page(request: Request):
             "title": "导入节点",
             "import_groups": list_import_groups(),
             "selected_group_id": request.query_params.get("group_id", ""),
+            "selected_group_ids": [request.query_params.get("group_id", "")] if request.query_params.get("group_id", "") else [],
         },
     )
 
@@ -1191,7 +1208,9 @@ async def import_node_create_page(request: Request):
     values = default_form_values()
     values["protocol_type"] = PROTOCOL_IMPORT
     values["ssh_user"] = "imported"
-    values["import_group_id"] = request.query_params.get("group_id", "")
+    group_id = request.query_params.get("group_id", "")
+    values["import_group_id"] = group_id
+    values["import_group_ids"] = [group_id] if group_id else []
     return render_node_form(
         request,
         title="导入节点",
@@ -1225,7 +1244,7 @@ async def node_create_submit(
     manual_country_code: str = Form(""),
     manual_region_label: str = Form(""),
     last_vless_link: str = Form(""),
-    import_group_id: str = Form(""),
+    import_group_ids: list[str] = Form([]),
 ):
     payload, errors = clean_node_form(
         {
@@ -1249,7 +1268,7 @@ async def node_create_submit(
             "manual_country_code": manual_country_code,
             "manual_region_label": manual_region_label,
             "last_vless_link": last_vless_link,
-            "import_group_id": import_group_id,
+            "import_group_ids": [value for value in import_group_ids if value],
         }
     )
 
@@ -1262,8 +1281,10 @@ async def node_create_submit(
         if conflict:
             errors.append("已存在相同 IP + 公网端口或监听端口 的节点记录")
 
-    if payload.get("import_group_id") and not any(group["group_id"] == payload["import_group_id"] for group in list_import_groups()):
-        errors.append("请选择有效的导入节点组")
+    if is_import_protocol(payload.get("protocol_type")):
+        valid_group_ids = {group["group_id"] for group in list_import_groups()}
+        if any(group_id not in valid_group_ids for group_id in payload.get("import_group_ids", [])):
+            errors.append("请选择有效的导入节点组")
 
     if errors:
         return render_node_form(
@@ -1283,8 +1304,13 @@ async def node_create_submit(
 @login_required
 async def import_nodes_action(request: Request):
     form = await request.form()
-    group_id = str(form.get("import_group_id") or "").strip() or None
-    if group_id and not any(group["group_id"] == group_id for group in list_import_groups()):
+    raw_group_ids = form.getlist("import_group_ids")
+    if not raw_group_ids:
+        legacy_group_id = str(form.get("import_group_id") or "").strip()
+        raw_group_ids = [legacy_group_id] if legacy_group_id else []
+    group_ids = list(dict.fromkeys(str(value).strip() for value in raw_group_ids if str(value).strip()))
+    valid_group_ids = {group["group_id"] for group in list_import_groups()}
+    if any(group_id not in valid_group_ids for group_id in group_ids):
         return PlainTextResponse("请选择有效的导入节点组", status_code=400)
     text = str(form.get("links") or "").strip()
     if not text:
@@ -1311,7 +1337,8 @@ async def import_nodes_action(request: Request):
             "public_port": "",
             "listen_port": "",
             "protocol_type": PROTOCOL_IMPORT,
-            "import_group_id": group_id,
+            "import_group_ids": group_ids,
+            "import_group_id": group_ids[0] if group_ids else None,
             "last_vless_link": line,
             "manual_country_code": "",
             "manual_region_label": "",
@@ -1335,7 +1362,8 @@ async def import_nodes_action(request: Request):
             "request": request,
             "title": "导入节点",
             "import_groups": list_import_groups(),
-            "selected_group_id": group_id or "",
+            "selected_group_id": group_ids[0] if group_ids else "",
+            "selected_group_ids": group_ids,
             "submitted_links": text,
             "result": {
                 "created": created_count,
@@ -1354,7 +1382,7 @@ async def import_node_create_submit(
     last_vless_link: str = Form(""),
     manual_country_code: str = Form(""),
     manual_region_label: str = Form(""),
-    import_group_id: str = Form(""),
+    import_group_ids: list[str] = Form([]),
 ):
     payload, errors = clean_node_form(
         {
@@ -1369,7 +1397,7 @@ async def import_node_create_submit(
             "last_vless_link": last_vless_link,
             "manual_country_code": manual_country_code,
             "manual_region_label": manual_region_label,
-            "import_group_id": import_group_id,
+            "import_group_ids": [value for value in import_group_ids if value],
         }
     )
     if errors:
@@ -1640,7 +1668,7 @@ async def node_edit_submit(
     manual_country_code: str = Form(""),
     manual_region_label: str = Form(""),
     last_vless_link: str = Form(""),
-    import_group_id: str = Form(""),
+    import_group_ids: list[str] = Form([]),
 ):
     node = get_node(node_id)
     if not node:
@@ -1673,7 +1701,7 @@ async def node_edit_submit(
             "manual_country_code": manual_country_code,
             "manual_region_label": manual_region_label,
             "last_vless_link": last_vless_link,
-            "import_group_id": import_group_id,
+            "import_group_ids": [value for value in import_group_ids if value],
         },
         editing_node_id=node_id,
     )
@@ -1710,6 +1738,8 @@ async def node_edit_submit(
         existing.update(payload)
         payload["last_vless_link"] = vless_link_with_node_remark(str(node["last_vless_link"] or ""), existing)
     update_node_record(node_id, payload)
+    if is_import_protocol(payload.get("protocol_type")):
+        set_node_import_group_ids(node_id, list(payload.get("import_group_ids", [])))
     return RedirectResponse(url=f"/nodes/{node_id}", status_code=303)
 
 

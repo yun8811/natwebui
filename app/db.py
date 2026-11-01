@@ -114,6 +114,17 @@ CREATE TABLE IF NOT EXISTS import_groups (
 );
 """
 
+NODE_IMPORT_GROUP_SCHEMA = """
+CREATE TABLE IF NOT EXISTS node_import_groups (
+    node_id TEXT NOT NULL,
+    group_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (node_id, group_id),
+    FOREIGN KEY(node_id) REFERENCES nodes(node_id) ON DELETE CASCADE,
+    FOREIGN KEY(group_id) REFERENCES import_groups(group_id) ON DELETE CASCADE
+);
+"""
+
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -175,6 +186,8 @@ def init_db() -> None:
         conn.execute(IMPORT_GROUP_SCHEMA)
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_import_groups_name ON import_groups(name)")
         migrate_db(conn)
+        conn.execute(NODE_IMPORT_GROUP_SCHEMA)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_node_import_groups_group ON node_import_groups(group_id, node_id)")
         ts = now_iso()
         conn.execute(
             "INSERT OR IGNORE INTO import_groups (group_id, name, created_at, updated_at) "
@@ -186,6 +199,12 @@ def init_db() -> None:
             "UPDATE nodes SET import_group_id = 'import_default' "
             "WHERE protocol_type = 'imported_vless' AND import_group_id IS NULL "
             "AND EXISTS (SELECT 1 FROM import_groups WHERE group_id = 'import_default')"
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO node_import_groups (node_id, group_id, created_at) "
+            "SELECT node_id, import_group_id, ? FROM nodes "
+            "WHERE protocol_type = 'imported_vless' AND import_group_id IS NOT NULL",
+            (ts,),
         )
 
 
@@ -211,11 +230,46 @@ def create_import_group(name: str) -> str:
 
 
 
+def get_node_import_group_ids(node_id: str) -> list[str]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT group_id FROM node_import_groups WHERE node_id = ? ORDER BY created_at, group_id",
+            (node_id,),
+        ).fetchall()
+        return [str(row["group_id"]) for row in rows]
+
+
+
+def set_node_import_group_ids(node_id: str, group_ids: list[str]) -> None:
+    clean_ids = list(dict.fromkeys(str(group_id).strip() for group_id in group_ids if str(group_id).strip()))
+    ts = now_iso()
+    with get_conn() as conn:
+        if clean_ids:
+            placeholders = ",".join("?" for _ in clean_ids)
+            valid_rows = conn.execute(
+                f"SELECT group_id FROM import_groups WHERE group_id IN ({placeholders})",
+                tuple(clean_ids),
+            ).fetchall()
+            valid_ids = [str(row["group_id"]) for row in valid_rows]
+        else:
+            valid_ids = []
+        conn.execute("DELETE FROM node_import_groups WHERE node_id = ?", (node_id,))
+        conn.executemany(
+            "INSERT INTO node_import_groups (node_id, group_id, created_at) VALUES (?, ?, ?)",
+            [(node_id, group_id, ts) for group_id in valid_ids],
+        )
+        conn.execute(
+            "UPDATE nodes SET import_group_id = ? WHERE node_id = ?",
+            (valid_ids[0] if valid_ids else None, node_id),
+        )
+
+
+
 def delete_import_group(group_id: str) -> bool:
     with get_conn() as conn:
+        conn.execute("DELETE FROM node_import_groups WHERE group_id = ?", (group_id,))
+        conn.execute("UPDATE nodes SET import_group_id = NULL WHERE import_group_id = ?", (group_id,))
         cur = conn.execute("DELETE FROM import_groups WHERE group_id = ?", (group_id,))
-        if cur.rowcount:
-            conn.execute("UPDATE nodes SET import_group_id = NULL WHERE import_group_id = ?", (group_id,))
         return cur.rowcount > 0
 
 
@@ -228,9 +282,15 @@ def list_nodes() -> list[sqlite3.Row]:
                 nodes.*,
                 front.name AS front_node_name,
                 backend.name AS backend_node_name,
-                import_groups.name AS import_group_name
+                COALESCE(
+                    (SELECT GROUP_CONCAT(group_id, ',') FROM node_import_groups WHERE node_id = nodes.node_id),
+                    nodes.import_group_id
+                ) AS import_group_ids,
+                COALESCE(
+                    (SELECT GROUP_CONCAT(import_groups.name, ', ') FROM node_import_groups JOIN import_groups USING (group_id) WHERE node_id = nodes.node_id),
+                    (SELECT name FROM import_groups WHERE group_id = nodes.import_group_id)
+                ) AS import_group_name
             FROM nodes
-            LEFT JOIN import_groups ON nodes.import_group_id = import_groups.group_id
             LEFT JOIN nodes AS front ON nodes.front_node_id = front.node_id
             LEFT JOIN nodes AS backend ON nodes.backend_node_id = backend.node_id
             ORDER BY nodes.updated_at DESC, nodes.created_at DESC
@@ -243,7 +303,12 @@ def list_direct_vless_nodes() -> list[sqlite3.Row]:
     with get_conn() as conn:
         return conn.execute(
             """
-            SELECT * FROM nodes
+            SELECT nodes.*,
+                   COALESCE(
+                       (SELECT GROUP_CONCAT(group_id, ',') FROM node_import_groups WHERE node_id = nodes.node_id),
+                       import_group_id
+                   ) AS import_group_ids
+            FROM nodes
             WHERE protocol_type = 'vless_reality_singbox'
               AND TRIM(COALESCE(ip, '')) != ''
               AND COALESCE(public_port, 0) > 0
@@ -269,7 +334,15 @@ def list_chain_backend_nodes() -> list[sqlite3.Row]:
 
 def list_subscribable_nodes(protocol_type: str | Sequence[str] | None = None) -> list[sqlite3.Row]:
     query = """
-        SELECT * FROM nodes
+        SELECT
+            nodes.*,
+            COALESCE(
+                (SELECT GROUP_CONCAT(group_id, ',')
+                 FROM node_import_groups
+                 WHERE node_id = nodes.node_id),
+                nodes.import_group_id
+            ) AS import_group_ids
+        FROM nodes
         WHERE TRIM(COALESCE(last_vless_link, '')) != ''
     """
     params: list[Any] = []
@@ -329,7 +402,15 @@ def get_node(node_id: str) -> sqlite3.Row | None:
             SELECT
                 nodes.*,
                 front.name AS front_node_name,
-                backend.name AS backend_node_name
+                backend.name AS backend_node_name,
+                COALESCE(
+                    (SELECT GROUP_CONCAT(group_id, ',') FROM node_import_groups WHERE node_id = nodes.node_id),
+                    nodes.import_group_id
+                ) AS import_group_ids,
+                COALESCE(
+                    (SELECT GROUP_CONCAT(import_groups.name, ', ') FROM node_import_groups JOIN import_groups USING (group_id) WHERE node_id = nodes.node_id),
+                    (SELECT name FROM import_groups WHERE group_id = nodes.import_group_id)
+                ) AS import_group_name
             FROM nodes
             LEFT JOIN nodes AS front ON nodes.front_node_id = front.node_id
             LEFT JOIN nodes AS backend ON nodes.backend_node_id = backend.node_id
@@ -501,6 +582,7 @@ def create_node_record(payload: dict[str, Any]) -> str:
     node_id = build_node_id()
     ts = now_iso()
     protocol_type = payload.get("protocol_type") or "vless_reality_singbox"
+    group_ids = payload.get("import_group_ids") or ([payload.get("import_group_id")] if payload.get("import_group_id") else [])
     with get_conn() as conn:
         conn.execute(
             """
@@ -550,6 +632,12 @@ def create_node_record(payload: dict[str, Any]) -> str:
                 ts,
             ),
         )
+        clean_ids = list(dict.fromkeys(str(group_id).strip() for group_id in group_ids if str(group_id).strip()))
+        if clean_ids:
+            conn.executemany(
+                "INSERT OR IGNORE INTO node_import_groups (node_id, group_id, created_at) VALUES (?, ?, ?)",
+                [(node_id, group_id, ts) for group_id in clean_ids],
+            )
     return node_id
 
 
@@ -621,6 +709,13 @@ def update_node_record(node_id: str, payload: dict[str, Any]) -> None:
                 node_id,
             ),
         )
+        if "import_group_ids" in payload:
+            group_ids = list(dict.fromkeys(str(group_id).strip() for group_id in payload.get("import_group_ids") or [] if str(group_id).strip()))
+            conn.execute("DELETE FROM node_import_groups WHERE node_id = ?", (node_id,))
+            conn.executemany(
+                "INSERT OR IGNORE INTO node_import_groups (node_id, group_id, created_at) VALUES (?, ?, ?)",
+                [(node_id, group_id, now_iso()) for group_id in group_ids],
+            )
 
 
 
